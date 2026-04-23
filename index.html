@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>VGC Notes</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <main class="app-shell">
+      <header class="topbar">
+        <div>
+          <p class="kicker" id="stepKicker">Step 1 of 4</p>
+          <h1 id="stepTitle">Import team</h1>
+        </div>
+        <div class="step-dots" aria-label="Progress">
+          <span class="dot is-active"></span>
+          <span class="dot"></span>
+          <span class="dot"></span>
+          <span class="dot"></span>
+        </div>
+      </header>
+
+      <section id="screen" class="screen" aria-live="polite"></section>
+
+      <footer class="action-bar" id="actionBar"></footer>
+      <nav class="main-nav" id="mainNav" aria-label="Main navigation"></nav>
+    </main>
+
+    <script src="./pokemon-data.js"></script>
+    <script src="./app.js"></script>
+  </body>
+</html>
