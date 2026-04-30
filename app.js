@@ -441,10 +441,13 @@ function renderBattle() {
   );
   const editingTurn = draft.turns.find((turn) => turn.number === draft.editingTurnNumber);
   const controls = el("div", "turn-controls");
-  const addTurn = el("button", "icon-button", editingTurn ? "Save turn" : `Add turn (${draft.turns.length + 1})`);
+  const addTurn = el("button", "icon-button", `Add turn (${draft.turns.length + 1})`);
   addTurn.type = "button";
-  addTurn.ariaLabel = editingTurn ? "Save turn" : `Add turn ${draft.turns.length + 1}`;
-  addTurn.disabled = turnEntryStatus.mustResolveEntries || (!editingTurn && nextTurnEntryStatus.mustResolveEntries);
+  addTurn.ariaLabel = `Add turn ${draft.turns.length + 1}`;
+  addTurn.disabled = Boolean(editingTurn) || turnEntryStatus.mustResolveEntries || nextTurnEntryStatus.mustResolveEntries;
+  const saveTurn = el("button", "secondary save-turn-button", "Save turn");
+  saveTurn.type = "button";
+  saveTurn.disabled = !editingTurn || turnEntryStatus.mustResolveEntries;
   const turnInput = el("textarea", "turn-note-input");
   turnInput.rows = 1;
   turnInput.value = draft.turnDraft.note;
@@ -454,40 +457,47 @@ function renderBattle() {
   const switchControls = renderSwitchControls(draft, battleTeamNames(draft));
   addTurn.addEventListener("click", () => {
     const text = draft.turnDraft.note.trim();
-    if (editingTurn) {
-      editingTurn.note = text;
-      editingTurn.myEntries = [...draft.turnDraft.myEntries];
-      editingTurn.opponentEntries = [...draft.turnDraft.opponentEntries];
-      editingTurn.mySwitches = [...draft.turnDraft.mySwitches];
-      editingTurn.opponentSwitches = [...draft.turnDraft.opponentSwitches];
-      editingTurn.mySwitchPairs = [...draft.turnDraft.mySwitchPairs];
-      editingTurn.opponentSwitchPairs = [...draft.turnDraft.opponentSwitchPairs];
-      editingTurn.myKos = [...draft.turnDraft.myKos];
-      editingTurn.opponentKos = [...draft.turnDraft.opponentKos];
-      draft.editingTurnNumber = null;
-    } else {
-      draft.turns.push({
-        number: draft.turns.length + 1,
-        note: text,
-        feedback: "",
-        myEntries: [...draft.turnDraft.myEntries],
-        opponentEntries: [...draft.turnDraft.opponentEntries],
-        mySwitches: [...draft.turnDraft.mySwitches],
-        opponentSwitches: [...draft.turnDraft.opponentSwitches],
-        mySwitchPairs: [...draft.turnDraft.mySwitchPairs],
-        opponentSwitchPairs: [...draft.turnDraft.opponentSwitchPairs],
-        myKos: [...draft.turnDraft.myKos],
-        opponentKos: [...draft.turnDraft.opponentKos],
-      });
-    }
+    draft.turns.push({
+      number: draft.turns.length + 1,
+      note: text,
+      feedback: "",
+      myEntries: [...draft.turnDraft.myEntries],
+      opponentEntries: [...draft.turnDraft.opponentEntries],
+      mySwitches: [...draft.turnDraft.mySwitches],
+      opponentSwitches: [...draft.turnDraft.opponentSwitches],
+      mySwitchPairs: [...draft.turnDraft.mySwitchPairs],
+      opponentSwitchPairs: [...draft.turnDraft.opponentSwitchPairs],
+      myKos: [...draft.turnDraft.myKos],
+      opponentKos: [...draft.turnDraft.opponentKos],
+    });
     const nextDraft = emptyTurnDraft();
     nextDraft.myEntries = [...draft.turnDraft.nextMyEntries];
     nextDraft.opponentEntries = [...draft.turnDraft.nextOpponentEntries];
     draft.turnDraft = nextDraft;
     render();
   });
+  saveTurn.addEventListener("click", () => {
+    if (!editingTurn) return;
+    editingTurn.note = draft.turnDraft.note.trim();
+    editingTurn.myEntries = [...draft.turnDraft.myEntries];
+    editingTurn.opponentEntries = [...draft.turnDraft.opponentEntries];
+    editingTurn.mySwitches = [...draft.turnDraft.mySwitches];
+    editingTurn.opponentSwitches = [...draft.turnDraft.opponentSwitches];
+    editingTurn.mySwitchPairs = [...draft.turnDraft.mySwitchPairs];
+    editingTurn.opponentSwitchPairs = [...draft.turnDraft.opponentSwitchPairs];
+    editingTurn.myKos = [...draft.turnDraft.myKos];
+    editingTurn.opponentKos = [...draft.turnDraft.opponentKos];
+    draft.editingTurnNumber = null;
+    draft.turnDraft = emptyTurnDraft();
+    render();
+  });
   const turnEntryRow = el("div", "turn-entry-row");
-  turnEntryRow.append(addTurn, turnInput);
+  const turnEntryActions = el("div", "turn-entry-actions");
+  turnEntryActions.append(addTurn);
+  if (editingTurn) {
+    turnEntryActions.append(saveTurn);
+  }
+  turnEntryRow.append(turnEntryActions, turnInput);
   controls.append(turnEntryRow, switchControls);
   const turnList = el("ul", "turn-list");
   draft.turns.slice(-4).forEach((turn) => {
@@ -1555,7 +1565,12 @@ function renderArchiveDetail() {
       const board = boardBeforeTurn(battle, turn.number);
       const boardStart = previewBoard(board, turn, { includeSwitches: false, includeKos: false });
       const boardAfter = previewBoard(board, turn);
-      card.append(el("strong", "archive-turn-title", `Turn ${turn.number}`), boardPanel("Start", boardStart.myActive, boardStart.opponentActive));
+      const header = el("div", "archive-turn-header");
+      header.append(
+        el("strong", "archive-turn-title", `Turn ${turn.number}`),
+        battle.errorTurn === String(turn.number) ? el("span", "result-chip is-key", "Turno chiave") : el("span", "archive-turn-spacer")
+      );
+      card.append(header, boardPanel("Start", boardStart.myActive, boardStart.opponentActive));
       if (turn.note) card.append(el("p", "archive-note", turn.note));
       const events = rosterBlock("Turn events", turnEventGroups(turn), false);
       if (events) card.append(events);
@@ -1586,6 +1601,9 @@ function renderArchiveDetail() {
 
   const review = el("div", "dash-block");
   review.append(el("div", "dash-label", "Review"));
+  if (battle.errorTurn) {
+    review.append(el("p", "dash-text", `Turno chiave: T${battle.errorTurn}`));
+  }
 
   const snapshotField = el("div", "field compact-field");
   const snapshotLabel = el("label", "", "Battle snapshot");

@@ -515,9 +515,15 @@ input {
 
 .turn-entry-row {
   display: grid;
-  grid-template-columns: auto 1fr;
+  grid-template-columns: auto minmax(0, 1fr);
   align-items: stretch;
   gap: 8px;
+}
+
+.turn-entry-actions {
+  display: grid;
+  gap: 8px;
+  align-content: start;
 }
 
 .icon-button {
@@ -529,6 +535,12 @@ input {
   color: var(--accent-ink);
   font-size: 0.92rem;
   font-weight: 900;
+  white-space: nowrap;
+}
+
+.save-turn-button {
+  min-width: 132px;
+  min-height: 46px;
   white-space: nowrap;
 }
 
@@ -930,8 +942,19 @@ input {
   background: var(--panel);
 }
 
+.archive-turn-header {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+}
+
 .archive-turn-title {
   color: var(--text);
+}
+
+.archive-turn-spacer {
+  display: none;
 }
 
 .archive-note {
@@ -986,6 +1009,12 @@ input {
   background: #3a1719;
   border-color: #ff756f;
   color: #fff2f1;
+}
+
+.result-chip.is-key {
+  background: #2a2038;
+  border-color: #d7a7ff;
+  color: #fbf5ff;
 }
 
 .roster-block {
