@@ -21,6 +21,10 @@ const BATTLE_SNAPSHOT_PLACEHOLDER = `Plan:
 Target:
 Key moment:`;
 
+const ICON_VERSIONS = {
+  teams: "2",
+};
+
 const state = {
   teams: loadTeams(),
   activeTeamId: "",
@@ -100,8 +104,6 @@ function emptyTurnDraft() {
     note: "",
     myEntries: [],
     opponentEntries: [],
-    nextMyEntries: [],
-    nextOpponentEntries: [],
     mySwitches: [],
     opponentSwitches: [],
     mySwitchPairs: [],
@@ -211,24 +213,12 @@ function renderTopbar() {
   stepKicker.hidden = true;
   stepTitle.textContent = title;
   stepDots.hidden = true;
-
-  if (state.view === "teams" && !state.teamImportOpen && state.teams.length) {
-    const add = el("button", "top-action", "+");
-    add.type = "button";
-    add.ariaLabel = "Add team";
-    add.addEventListener("click", () => {
-      state.parsedTeam = [];
-      state.teamImportOpen = true;
-      render();
-    });
-    document.querySelector(".topbar").append(add);
-  }
 }
 
 function getBackConfig() {
   if (state.view === "archive" && state.archiveDetailId) {
     return {
-      label: "Back to archive",
+      label: "Back to Archive",
       action: () => {
         state.archiveDetailId = "";
         render();
@@ -238,7 +228,7 @@ function getBackConfig() {
 
   if (state.view === "teams" && state.teamImportOpen && state.teams.length) {
     return {
-      label: "Back to teams",
+      label: "Back to Teams",
       action: () => {
         state.teamImportOpen = false;
         render();
@@ -248,7 +238,7 @@ function getBackConfig() {
 
   if (state.view === "battle" && state.step === 2) {
     return {
-      label: "Back to battle",
+      label: "Back to Battle",
       action: () => setStep(1),
     };
   }
@@ -260,16 +250,37 @@ function renderMainNav() {
   [
     ["dashboard", "Home"],
     ["battle", "Battle"],
-    ["teams", "Teams"],
     ["archive", "Archive"],
+    ["teams", "Teams"],
     ["settings", "Settings"],
   ].forEach(([view, label]) => {
-    const button = el("button", "nav-button", label);
+    const button = el("button", "nav-button");
     button.type = "button";
+    button.setAttribute("aria-label", label);
+    button.title = label;
+    button.classList.add("is-icon");
+    button.append(navIconAsset(view, label), srOnly(label));
     button.classList.toggle("is-active", state.view === view);
     button.addEventListener("click", () => setPage(view));
     mainNav.append(button);
   });
+}
+
+function navIconAsset(view, label) {
+  const img = el("img", "nav-icon");
+  const version = ICON_VERSIONS[view] ? `?v=${ICON_VERSIONS[view]}` : "";
+  img.src = `icons/${view}.svg${version}`;
+  img.alt = "";
+  img.setAttribute("aria-hidden", "true");
+  img.draggable = false;
+  img.decoding = "async";
+  img.loading = "eager";
+  img.dataset.icon = label;
+  return img;
+}
+
+function srOnly(text) {
+  return el("span", "sr-only", text);
 }
 
 function renderImport() {
@@ -295,34 +306,26 @@ function renderImport() {
   const namesGroup = el("div", "group");
   namesGroup.append(el("div", "group-title", "Team"));
 
-  const datalistId = "teamPokemonSuggestions";
-  const datalist = el("datalist");
-  datalist.id = datalistId;
-  POKEMON_NAMES.forEach((name) => {
-    const option = el("option");
-    option.value = name;
-    datalist.append(option);
-  });
-
   const grid = el("div", "opponent-grid");
   currentNames.forEach((name, index) => {
-    const input = el("input", "mini-input opponent-input");
-    input.setAttribute("list", datalistId);
-    input.value = name;
-    input.addEventListener("input", () => {
-      currentNames[index] = input.value.slice(0, 40);
-      state.parsedTeam = [...currentNames];
-      saveButton.disabled = !isImportedTeamReady(currentNames);
+    const field = buildPokemonSuggestField({
+      value: name,
+      suggestions: POKEMON_NAMES,
+      maxLength: 40,
+      onInput: (nextValue) => {
+        currentNames[index] = nextValue;
+        state.parsedTeam = [...currentNames];
+        saveButton.disabled = !isImportedTeamReady(currentNames);
+      },
+      onCommit: (nextValue) => {
+        currentNames[index] = nextValue.trim();
+        state.parsedTeam = [...currentNames];
+        saveButton.disabled = !isImportedTeamReady(currentNames);
+      },
     });
-    input.addEventListener("blur", () => {
-      currentNames[index] = input.value.trim();
-      state.parsedTeam = [...currentNames];
-      input.value = currentNames[index];
-      saveButton.disabled = !isImportedTeamReady(currentNames);
-    });
-    grid.append(input);
+    grid.append(field);
   });
-  namesGroup.append(datalist, grid);
+  namesGroup.append(grid);
 
   const saveButton = el("button", "primary", "Save team");
   saveButton.type = "button";
@@ -379,12 +382,14 @@ function renderBattle() {
   ensureDraftShape(draft);
   const team = activeTeamNames();
   const turnEntryStatus = getTurnEntryStatus(draft, battleTeamNames(draft));
-  const nextTurnEntryStatus = getNextTurnEntryStatus(draft, battleTeamNames(draft));
+  const hasFullOpponentTeam = opponentTeamReady(draft);
   const replayImportGroup = renderBattleReplayImport();
 
   const opponentGroup = renderOpponentTeam(draft);
+  opponentGroup.classList.add("battle-section");
 
   const usedGroup = el("div", "group");
+  usedGroup.classList.add("battle-section");
   const usedHeader = el("div", "group-header");
   usedHeader.append(el("div", "group-title", `Lead / back ${draft.used.length}/4`));
   const clearUsed = el("button", "tiny-button", "Clear");
@@ -421,9 +426,10 @@ function renderBattle() {
   usedGroup.append(usedHeader, teamGrid);
 
   const noteField = el("div", "field");
-  const noteLabel = el("label", "", "Battle snapshot");
+  noteField.classList.add("battle-section");
+  const noteLabel = el("label", "", "Battle Snapshot");
   noteLabel.htmlFor = "battleNote";
-  const noteHelp = el("p", "helper-text", "Scrivi solo piano, target e momento chiave.");
+  const noteHelp = el("p", "helper-text", "Just write plan, target, and key moment.");
   const note = el("textarea", "snapshot-note");
   note.id = "battleNote";
   note.rows = 4;
@@ -435,19 +441,24 @@ function renderBattle() {
   noteField.append(noteLabel, noteHelp, note);
 
   const turnGroup = el("div", "group");
+  turnGroup.classList.add("battle-section");
   turnGroup.append(
-    el("div", "group-title", "Key turns"),
-    el("p", "helper-text", "Non segnare tutto. Solo i turni che vuoi capire meglio dopo.")
+    el("div", "group-title", "Key Turns"),
+    el("p", "helper-text", "Don’t log everything. Only the turns you want to understand better later.")
   );
   const editingTurn = draft.turns.find((turn) => turn.number === draft.editingTurnNumber);
   const controls = el("div", "turn-controls");
-  const addTurn = el("button", "icon-button", `Add turn (${draft.turns.length + 1})`);
-  addTurn.type = "button";
-  addTurn.ariaLabel = `Add turn ${draft.turns.length + 1}`;
-  addTurn.disabled = Boolean(editingTurn) || turnEntryStatus.mustResolveEntries || nextTurnEntryStatus.mustResolveEntries;
-  const saveTurn = el("button", "secondary save-turn-button", "Save turn");
+  const composeCard = el("div", "turn-compose-card");
+  const composeTitle = el("div", "group-title", editingTurn ? `Turn ${editingTurn.number}` : `Turn ${draft.turns.length + 1}`);
+  const saveTurn = el(
+    "button",
+    editingTurn ? "secondary save-turn-button" : "icon-button save-turn-button",
+    editingTurn ? "Save turn" : `Add turn (${draft.turns.length + 1})`
+  );
   saveTurn.type = "button";
-  saveTurn.disabled = !editingTurn || turnEntryStatus.mustResolveEntries;
+  saveTurn.disabled = editingTurn
+    ? turnEntryStatus.mustResolveEntries || !hasFullOpponentTeam
+    : draft.used.length !== 4 || !hasFullOpponentTeam || turnEntryStatus.mustResolveEntries;
   const turnInput = el("textarea", "turn-note-input");
   turnInput.rows = 1;
   turnInput.value = draft.turnDraft.note;
@@ -455,82 +466,67 @@ function renderBattle() {
     draft.turnDraft.note = turnInput.value;
   });
   const switchControls = renderSwitchControls(draft, battleTeamNames(draft));
-  addTurn.addEventListener("click", () => {
-    const text = draft.turnDraft.note.trim();
-    draft.turns.push({
-      number: draft.turns.length + 1,
-      note: text,
-      feedback: "",
-      myEntries: [...draft.turnDraft.myEntries],
-      opponentEntries: [...draft.turnDraft.opponentEntries],
-      mySwitches: [...draft.turnDraft.mySwitches],
-      opponentSwitches: [...draft.turnDraft.opponentSwitches],
-      mySwitchPairs: [...draft.turnDraft.mySwitchPairs],
-      opponentSwitchPairs: [...draft.turnDraft.opponentSwitchPairs],
-      myKos: [...draft.turnDraft.myKos],
-      opponentKos: [...draft.turnDraft.opponentKos],
-    });
-    const nextDraft = emptyTurnDraft();
-    nextDraft.myEntries = [...draft.turnDraft.nextMyEntries];
-    nextDraft.opponentEntries = [...draft.turnDraft.nextOpponentEntries];
-    draft.turnDraft = nextDraft;
-    render();
-  });
   saveTurn.addEventListener("click", () => {
-    if (!editingTurn) return;
-    editingTurn.note = draft.turnDraft.note.trim();
-    editingTurn.myEntries = [...draft.turnDraft.myEntries];
-    editingTurn.opponentEntries = [...draft.turnDraft.opponentEntries];
-    editingTurn.mySwitches = [...draft.turnDraft.mySwitches];
-    editingTurn.opponentSwitches = [...draft.turnDraft.opponentSwitches];
-    editingTurn.mySwitchPairs = [...draft.turnDraft.mySwitchPairs];
-    editingTurn.opponentSwitchPairs = [...draft.turnDraft.opponentSwitchPairs];
-    editingTurn.myKos = [...draft.turnDraft.myKos];
-    editingTurn.opponentKos = [...draft.turnDraft.opponentKos];
-    draft.editingTurnNumber = null;
-    draft.turnDraft = emptyTurnDraft();
+    const text = draft.turnDraft.note.trim();
+    if (editingTurn) {
+      editingTurn.note = text;
+      editingTurn.myEntries = [...draft.turnDraft.myEntries];
+      editingTurn.opponentEntries = [...draft.turnDraft.opponentEntries];
+      editingTurn.mySwitches = [...draft.turnDraft.mySwitches];
+      editingTurn.opponentSwitches = [...draft.turnDraft.opponentSwitches];
+      editingTurn.mySwitchPairs = [...draft.turnDraft.mySwitchPairs];
+      editingTurn.opponentSwitchPairs = [...draft.turnDraft.opponentSwitchPairs];
+      editingTurn.myKos = [...draft.turnDraft.myKos];
+      editingTurn.opponentKos = [...draft.turnDraft.opponentKos];
+      draft.editingTurnNumber = null;
+      draft.turnDraft = emptyTurnDraft();
+    } else {
+      draft.turns.push({
+        number: draft.turns.length + 1,
+        note: text,
+        feedback: "",
+        myEntries: [...draft.turnDraft.myEntries],
+        opponentEntries: [...draft.turnDraft.opponentEntries],
+        mySwitches: [...draft.turnDraft.mySwitches],
+        opponentSwitches: [...draft.turnDraft.opponentSwitches],
+        mySwitchPairs: [...draft.turnDraft.mySwitchPairs],
+        opponentSwitchPairs: [...draft.turnDraft.opponentSwitchPairs],
+        myKos: [...draft.turnDraft.myKos],
+        opponentKos: [...draft.turnDraft.opponentKos],
+      });
+      draft.turnDraft = emptyTurnDraft();
+    }
     render();
   });
-  const turnEntryRow = el("div", "turn-entry-row");
-  const turnEntryActions = el("div", "turn-entry-actions");
-  turnEntryActions.append(addTurn);
-  if (editingTurn) {
-    turnEntryActions.append(saveTurn);
-  }
-  turnEntryRow.append(turnEntryActions, turnInput);
-  controls.append(turnEntryRow, switchControls);
+  composeCard.append(composeTitle, turnInput, switchControls, saveTurn);
+  controls.append(composeCard);
   const turnList = el("ul", "turn-list");
   draft.turns.slice(-4).forEach((turn) => {
-    const row = el("li", "turn-row");
-    const turnText = el("span", "", turnSummary(turn));
-    row.append(el("strong", "", `Turn ${turn.number}`), turnText);
+    const row = renderBattleTurnRow(draft, turn);
+    const actions = el("div", "turn-actions");
+    const edit = el("button", "tiny-button", "Edit");
+    edit.type = "button";
+    edit.addEventListener("click", () => {
+      draft.editingTurnNumber = turn.number;
+      draft.turnDraft = {
+        note: turn.note ?? "",
+        myEntries: [...(turn.myEntries ?? [])],
+        opponentEntries: [...(turn.opponentEntries ?? [])],
+        mySwitches: [...(turn.mySwitches ?? [])],
+        opponentSwitches: [...(turn.opponentSwitches ?? [])],
+        mySwitchPairs: [...(turn.mySwitchPairs ?? [])],
+        opponentSwitchPairs: [...(turn.opponentSwitchPairs ?? [])],
+        myKos: [...(turn.myKos ?? [])],
+        opponentKos: [...(turn.opponentKos ?? [])],
+        eventMode: "",
+        mySwitchOut: "",
+        opponentSwitchOut: "",
+      };
+      render();
+    });
+    actions.append(edit);
 
     if (turn.number === draft.turns.at(-1)?.number) {
-      row.classList.add("has-actions");
-      const actions = el("div", "turn-actions");
-      const edit = el("button", "tiny-button", "Edit");
-      edit.type = "button";
-      edit.addEventListener("click", () => {
-        draft.editingTurnNumber = turn.number;
-        draft.turnDraft = {
-          note: turn.note ?? "",
-          myEntries: [...(turn.myEntries ?? [])],
-          opponentEntries: [...(turn.opponentEntries ?? [])],
-          nextMyEntries: [],
-          nextOpponentEntries: [],
-          mySwitches: [...(turn.mySwitches ?? [])],
-          opponentSwitches: [...(turn.opponentSwitches ?? [])],
-          mySwitchPairs: [...(turn.mySwitchPairs ?? [])],
-          opponentSwitchPairs: [...(turn.opponentSwitchPairs ?? [])],
-          myKos: [...(turn.myKos ?? [])],
-          opponentKos: [...(turn.opponentKos ?? [])],
-          eventMode: "",
-          mySwitchOut: "",
-          opponentSwitchOut: "",
-        };
-        render();
-      });
-
       const remove = el("button", "tiny-button", "Delete");
       remove.type = "button";
       remove.addEventListener("click", () => {
@@ -539,30 +535,30 @@ function renderBattle() {
         draft.turnDraft = emptyTurnDraft();
         render();
       });
-
-      actions.append(edit, remove);
-      row.append(actions);
+      actions.append(remove);
     }
+
+    row.append(actions);
 
     turnList.append(row);
   });
   if (!draft.turns.length) {
-    turnList.append(el("li", "empty", "Segna solo i turni importanti, strani o decisivi."));
+    turnList.append(el("li", "empty", "Log only the important, strange, or decisive turns."));
   }
   turnGroup.append(controls, turnList);
 
   const reviewButton = el("button", "primary", "Save and review");
   reviewButton.type = "button";
-  reviewButton.disabled = draft.used.length !== 4 || draft.turns.length === 0;
+  reviewButton.disabled = draft.used.length !== 4 || !hasFullOpponentTeam || draft.turns.length === 0;
   reviewButton.addEventListener("click", () => setStep(2));
 
-  screen.append(replayImportGroup, opponentGroup, usedGroup, noteField, turnGroup);
+  screen.append(replayImportGroup, usedGroup, opponentGroup, noteField, turnGroup);
   actionBar.append(reviewButton);
 }
 
 function renderBattleReplayImport() {
   const group = el("div", "group battle-import-group");
-  group.append(el("div", "group-title", "Import replay"));
+  group.append(el("div", "group-title", "Import Replay"));
 
   const replayInput = el("input", "file-input");
   replayInput.type = "file";
@@ -581,7 +577,7 @@ function renderBattleReplayImport() {
 
   if (state.replayImport) {
     const prompt = el("div", "dash-block");
-    prompt.append(el("div", "dash-label", "Chi sei tu?"));
+    prompt.append(el("div", "dash-label", "Which side are you?"));
     const options = el("div", "replay-choice-list");
     ["p1", "p2"].forEach((side) => options.append(replayChoiceButton(state.replayImport, side)));
     const cancel = el("button", "tiny-button", "Cancel");
@@ -618,8 +614,6 @@ function ensureDraftShape(draft) {
   draft.turnDraft.note ??= "";
   draft.turnDraft.myEntries ??= [];
   draft.turnDraft.opponentEntries ??= [];
-  draft.turnDraft.nextMyEntries ??= [];
-  draft.turnDraft.nextOpponentEntries ??= [];
   draft.turnDraft.mySwitches ??= [];
   draft.turnDraft.opponentSwitches ??= [];
   draft.turnDraft.mySwitchPairs ??= [];
@@ -673,62 +667,35 @@ function ensureDraftShape(draft) {
   );
   draft.turnDraft.mySwitches = draft.turnDraft.mySwitchPairs.map((pair) => pair.in);
   draft.turnDraft.opponentSwitches = draft.turnDraft.opponentSwitchPairs.map((pair) => pair.in);
-
-  const nextEntryStatus = getNextTurnEntryStatus(draft, myBattleTeam, board);
-  const nextMyEntryChoices = mergeChoices(
-    draft.turnDraft.nextMyEntries,
-    nextEntryStatus.myEntryChoices
-  );
-  const nextOpponentEntryChoices = mergeChoices(
-    draft.turnDraft.nextOpponentEntries,
-    nextEntryStatus.opponentEntryChoices
-  );
-  if (nextEntryStatus.myMissing === 0) {
-    draft.turnDraft.nextMyEntries = [];
-  } else {
-    draft.turnDraft.nextMyEntries = draft.turnDraft.nextMyEntries.filter((name) => nextMyEntryChoices.includes(name));
-  }
-  if (nextEntryStatus.opponentMissing === 0) {
-    draft.turnDraft.nextOpponentEntries = [];
-  } else {
-    draft.turnDraft.nextOpponentEntries = draft.turnDraft.nextOpponentEntries.filter((name) => nextOpponentEntryChoices.includes(name));
-  }
 }
 
 function renderOpponentTeam(draft) {
   const group = el("div", "group");
-  group.append(el("div", "group-title", "Opponent team"));
-
-  const datalistId = "pokemonSuggestions";
-  const datalist = el("datalist");
-  datalist.id = datalistId;
-  pokemonSuggestions(draft).forEach((name) => {
-    const option = el("option");
-    option.value = name;
-    datalist.append(option);
-  });
+  group.append(el("div", "group-title", "Opponent Team"));
 
   const grid = el("div", "opponent-grid");
   draft.opponentTeam.slice(0, 6).forEach((name, index) => {
-    const input = el("input", "mini-input opponent-input");
-    input.setAttribute("list", datalistId);
-    input.value = name;
-    input.addEventListener("input", () => {
-      draft.opponentTeam[index] = input.value.slice(0, 32);
-      draft.opponentLead = draft.opponentLead.filter((lead) => filledOpponentTeam(draft).includes(lead));
+    const field = buildPokemonSuggestField({
+      value: name,
+      suggestions: pokemonSuggestions(draft),
+      maxLength: 32,
+      onInput: (nextValue) => {
+        draft.opponentTeam[index] = nextValue;
+        draft.opponentLead = draft.opponentLead.filter((lead) => filledOpponentTeam(draft).includes(lead));
+      },
+      onCommit: (nextValue) => {
+        draft.opponentTeam[index] = nextValue.trim();
+        render();
+      },
     });
-    input.addEventListener("blur", () => {
-      draft.opponentTeam[index] = input.value.trim();
-      render();
-    });
-    grid.append(input);
+    grid.append(field);
   });
-  group.append(datalist, grid);
+  group.append(grid);
 
   const opponentNames = filledOpponentTeam(draft);
   if (opponentNames.length) {
     const leadGroup = el("div", "mini-chip-group");
-    leadGroup.append(el("div", "mini-label", "T1 lead"));
+    leadGroup.append(el("div", "mini-label", "Turn 1 lead"));
     const leadChips = el("div", "chip-grid compact-chips");
     opponentNames.forEach((name) => {
       const chip = el("button", "chip", name);
@@ -753,7 +720,6 @@ function renderSwitchControls(draft, team) {
   const baseBoard = boardBeforeTurn(draft, turnNumber);
   const entryStatus = getTurnEntryStatus(draft, team, baseBoard);
   const { myMissing, opponentMissing, myEntryChoices, opponentEntryChoices, needsMyEntry, needsOpponentEntry, mustResolveEntries } = entryStatus;
-  const nextEntryStatus = getNextTurnEntryStatus(draft, team, baseBoard);
   const boardAfterEntries = previewBoard(baseBoard, draft.turnDraft, {
     includeSwitches: false,
     includeKos: false,
@@ -764,18 +730,18 @@ function renderSwitchControls(draft, team) {
 
   if (mustResolveEntries) {
     const entryPanel = el("div", "event-panel");
-    entryPanel.append(el("div", "mini-label", "Ingressi dopo KO"));
+    entryPanel.append(el("div", "mini-label", "Entries after KO"));
     if (needsMyEntry) {
       entryPanel.append(
         switchGroup(
-          "Chi entra per me?",
+          "Who comes in for me?",
           mergeChoices(draft.turnDraft.myEntries, myEntryChoices),
           draft.turnDraft.myEntries,
           (next) => {
             draft.turnDraft.myEntries = limitSelection(next, myMissing);
             render();
           },
-          "Nessun mio Pokemon disponibile",
+          "No available Pokemon on my side",
           myMissing
         )
       );
@@ -783,14 +749,14 @@ function renderSwitchControls(draft, team) {
     if (needsOpponentEntry) {
       entryPanel.append(
         switchGroup(
-          "Chi entra per lui?",
+          "Who comes in for them?",
           mergeChoices(draft.turnDraft.opponentEntries, opponentEntryChoices),
           draft.turnDraft.opponentEntries,
           (next) => {
             draft.turnDraft.opponentEntries = limitSelection(next, opponentMissing);
             render();
           },
-          "Nessun suo Pokemon disponibile",
+          "No available Pokemon on their side",
           opponentMissing
         )
       );
@@ -800,8 +766,8 @@ function renderSwitchControls(draft, team) {
 
   const eventBar = el("div", "event-bar");
   [
-    ["my-switch", "Mio switch"],
-    ["opp-switch", "Suo switch"],
+    ["my-switch", "My switch"],
+    ["opp-switch", "Opp switch"],
     ["ko", "KO"],
   ].forEach(([mode, label]) => {
     const button = el("button", "event-button", label);
@@ -819,7 +785,7 @@ function renderSwitchControls(draft, team) {
   if (draft.turnDraft.eventMode === "my-switch") {
     wrap.append(
       switchPairPanel(
-        "Chi switchi?",
+        "Who do you switch?",
         availableSwitchOuts(boardAfterEntries.myActive, draft.turnDraft.mySwitchPairs),
         switchBenchOptions(team, boardAfterEntries.myActive, draft.turnDraft.mySwitchPairs, baseBoard.myFainted),
         draft.turnDraft,
@@ -830,7 +796,7 @@ function renderSwitchControls(draft, team) {
   if (draft.turnDraft.eventMode === "opp-switch") {
     wrap.append(
       switchPairPanel(
-        "Chi switcha lui?",
+        "Who do they switch?",
         availableSwitchOuts(boardAfterEntries.opponentActive, draft.turnDraft.opponentSwitchPairs),
         switchBenchOptions(
           filledOpponentTeam(draft),
@@ -846,52 +812,16 @@ function renderSwitchControls(draft, team) {
   if (draft.turnDraft.eventMode === "ko") {
     const koPanel = el("div", "event-panel");
     koPanel.append(
-      switchGroup("Miei attivi", boardAfterSwitches.myActive, draft.turnDraft.myKos, (next) => {
+      switchGroup("My active", boardAfterSwitches.myActive, draft.turnDraft.myKos, (next) => {
         draft.turnDraft.myKos = next;
         render();
       }),
-      switchGroup("Suoi attivi", boardAfterSwitches.opponentActive, draft.turnDraft.opponentKos, (next) => {
+      switchGroup("Opp active", boardAfterSwitches.opponentActive, draft.turnDraft.opponentKos, (next) => {
         draft.turnDraft.opponentKos = next;
         render();
       })
     );
     wrap.append(koPanel);
-  }
-
-  if (nextEntryStatus.showPrompt) {
-    const nextEntryPanel = el("div", "event-panel");
-    nextEntryPanel.append(el("div", "mini-label", "Chi entra dopo i KO?"));
-    if (nextEntryStatus.needsMyEntry || draft.turnDraft.nextMyEntries.length) {
-      nextEntryPanel.append(
-        switchGroup(
-          "Chi entra per me?",
-          mergeChoices(draft.turnDraft.nextMyEntries, nextEntryStatus.myEntryChoices),
-          draft.turnDraft.nextMyEntries,
-          (next) => {
-            draft.turnDraft.nextMyEntries = limitSelection(next, nextEntryStatus.myMissing);
-            render();
-          },
-          "Nessun mio Pokemon disponibile",
-          nextEntryStatus.myMissing
-        )
-      );
-    }
-    if (nextEntryStatus.needsOpponentEntry || draft.turnDraft.nextOpponentEntries.length) {
-      nextEntryPanel.append(
-        switchGroup(
-          "Chi entra per lui?",
-          mergeChoices(draft.turnDraft.nextOpponentEntries, nextEntryStatus.opponentEntryChoices),
-          draft.turnDraft.nextOpponentEntries,
-          (next) => {
-            draft.turnDraft.nextOpponentEntries = limitSelection(next, nextEntryStatus.opponentMissing);
-            render();
-          },
-          "Nessun suo Pokemon disponibile",
-          nextEntryStatus.opponentMissing
-        )
-      );
-    }
-    wrap.append(nextEntryPanel);
   }
 
   const summary = turnSummary({ ...draft.turnDraft, number: turnNumber });
@@ -907,7 +837,7 @@ function switchPairPanel(title, active, bench, turnDraft, side) {
 
   panel.append(el("div", "mini-label", title));
   panel.append(
-    switchGroup("Fuori", active, turnDraft[outKey] ? [turnDraft[outKey]] : [], (next) => {
+    switchGroup("Out", active, turnDraft[outKey] ? [turnDraft[outKey]] : [], (next) => {
       turnDraft[outKey] = next.at(-1) ?? "";
       render();
     })
@@ -915,7 +845,7 @@ function switchPairPanel(title, active, bench, turnDraft, side) {
 
   if (turnDraft[outKey]) {
     panel.append(
-      switchGroup("Dentro", bench, [], (next) => {
+      switchGroup("In", bench, [], (next) => {
         const incoming = next.at(-1);
         if (!incoming) return;
         turnDraft[pairsKey] = upsertSwitchPair(turnDraft[pairsKey], { out: turnDraft[outKey], in: incoming });
@@ -972,8 +902,8 @@ function boardPanel(label, myActive, opponentActive) {
   const panel = el("div", "board-panel");
   panel.append(
     el("div", "mini-label", label),
-    boardSide("Io", myActive),
-    boardSide("Lui", opponentActive)
+    boardSide("Me", myActive),
+    boardSide("Opp", opponentActive)
   );
   return panel;
 }
@@ -1016,42 +946,6 @@ function getTurnEntryStatus(draft, myTeam, baseBoard = null) {
     needsMyEntry,
     needsOpponentEntry,
     mustResolveEntries: needsMyEntry || needsOpponentEntry,
-  };
-}
-
-function getNextTurnEntryStatus(draft, myTeam, baseBoard = null) {
-  const board = baseBoard ?? boardBeforeTurn(draft, draft.editingTurnNumber ?? draft.turns.length + 1);
-  const afterTurn = previewBoard(board, draft.turnDraft);
-  const myMissing = Math.max(0, 2 - afterTurn.myActive.length);
-  const opponentMissing = Math.max(0, 2 - afterTurn.opponentActive.length);
-  const myEntryChoices = replacementChoices(
-    myTeam,
-    afterTurn.myActive,
-    afterTurn.myFainted,
-    draft.turnDraft.nextMyEntries
-  );
-  const opponentEntryChoices = replacementChoices(
-    filledOpponentTeam(draft),
-    afterTurn.opponentActive,
-    afterTurn.opponentFainted,
-    draft.turnDraft.nextOpponentEntries
-  );
-  const needsMyEntry = myMissing > draft.turnDraft.nextMyEntries.length && myEntryChoices.length > 0;
-  const needsOpponentEntry = opponentMissing > draft.turnDraft.nextOpponentEntries.length && opponentEntryChoices.length > 0;
-  const showPrompt =
-    draft.turnDraft.myKos.length > 0 ||
-    draft.turnDraft.opponentKos.length > 0 ||
-    draft.turnDraft.nextMyEntries.length > 0 ||
-    draft.turnDraft.nextOpponentEntries.length > 0;
-  return {
-    myMissing,
-    opponentMissing,
-    myEntryChoices,
-    opponentEntryChoices,
-    needsMyEntry,
-    needsOpponentEntry,
-    mustResolveEntries: needsMyEntry || needsOpponentEntry,
-    showPrompt,
   };
 }
 
@@ -1183,8 +1077,91 @@ function filledOpponentTeam(draft) {
   return draft.opponentTeam.map((name) => name.trim()).filter(Boolean);
 }
 
+function opponentTeamReady(draft) {
+  return filledOpponentTeam(draft).length === 6;
+}
+
 function pokemonSuggestions(draft) {
   return [...new Set([...POKEMON_NAMES, ...activeTeamNames(), ...filledOpponentTeam(draft)])].sort();
+}
+
+function buildPokemonSuggestField({ value = "", suggestions = [], onInput, onCommit, maxLength = 40 }) {
+  const wrap = el("div", "pokemon-field");
+  const input = el("input", "mini-input opponent-input");
+  const menu = el("div", "pokemon-menu");
+  input.value = value;
+  input.autocomplete = "off";
+  input.spellcheck = false;
+
+  let isOpen = false;
+
+  const closeMenu = () => {
+    isOpen = false;
+    wrap.classList.remove("is-open");
+    menu.hidden = true;
+  };
+
+  const getMatches = () => {
+    const query = input.value.trim().toLowerCase();
+    const names = [...new Set(suggestions.filter(Boolean))];
+    if (!query) return names.slice(0, 18);
+    const startsWith = names.filter((name) => name.toLowerCase().startsWith(query));
+    const contains = names.filter(
+      (name) => !name.toLowerCase().startsWith(query) && name.toLowerCase().includes(query)
+    );
+    return [...startsWith, ...contains].slice(0, 18);
+  };
+
+  const renderMenu = () => {
+    menu.innerHTML = "";
+    const matches = getMatches();
+    if (!isOpen || !matches.length) {
+      menu.hidden = true;
+      return;
+    }
+
+    matches.forEach((name) => {
+      const option = el("button", "pokemon-option", name);
+      option.type = "button";
+      option.addEventListener("mousedown", (event) => {
+        event.preventDefault();
+        input.value = name;
+        onInput?.(name);
+        onCommit?.(name);
+        closeMenu();
+      });
+      menu.append(option);
+    });
+    menu.hidden = false;
+  };
+
+  const openMenu = () => {
+    isOpen = true;
+    wrap.classList.add("is-open");
+    renderMenu();
+  };
+
+  input.addEventListener("focus", openMenu);
+  input.addEventListener("click", openMenu);
+  input.addEventListener("pointerdown", () => {
+    requestAnimationFrame(openMenu);
+  });
+  input.addEventListener("input", () => {
+    input.value = input.value.slice(0, maxLength);
+    onInput?.(input.value);
+    openMenu();
+  });
+  input.addEventListener("blur", () => {
+    window.setTimeout(() => {
+      input.value = input.value.trim();
+      onCommit?.(input.value);
+      closeMenu();
+    }, 120);
+  });
+
+  wrap.append(input, menu);
+  renderMenu();
+  return wrap;
 }
 
 function toggleLimited(items, value, max) {
@@ -1196,15 +1173,54 @@ function toggleLimited(items, value, max) {
 function turnSummary(turn) {
   const parts = [];
   if (turn.note) parts.push(turn.note);
-  if (turn.myEntries?.length) parts.push(`Io entra: ${turn.myEntries.join(" / ")}`);
-  if (turn.opponentEntries?.length) parts.push(`Lui entra: ${turn.opponentEntries.join(" / ")}`);
+  return turnSummaryDetails(turn, parts);
+}
+
+function turnEventSummary(turn) {
+  return turnSummaryDetails(turn, []);
+}
+
+function turnSummaryDetails(turn, parts = []) {
+  if (turn.myEntries?.length) parts.push(`Me in: ${turn.myEntries.join(" / ")}`);
+  if (turn.opponentEntries?.length) parts.push(`Opp in: ${turn.opponentEntries.join(" / ")}`);
   const mySwitchText = switchText(turn.mySwitchPairs, turn.mySwitches);
   const opponentSwitchText = switchText(turn.opponentSwitchPairs, turn.opponentSwitches);
-  if (mySwitchText) parts.push(`Io switch: ${mySwitchText}`);
-  if (opponentSwitchText) parts.push(`Lui switch: ${opponentSwitchText}`);
-  if (turn.myKos?.length) parts.push(`Io KO: ${turn.myKos.join(" / ")}`);
-  if (turn.opponentKos?.length) parts.push(`Lui KO: ${turn.opponentKos.join(" / ")}`);
+  if (mySwitchText) parts.push(`Me switch: ${mySwitchText}`);
+  if (opponentSwitchText) parts.push(`Opp switch: ${opponentSwitchText}`);
+  if (turn.myKos?.length) parts.push(`Me KO: ${turn.myKos.join(" / ")}`);
+  if (turn.opponentKos?.length) parts.push(`Opp KO: ${turn.opponentKos.join(" / ")}`);
   return parts.join(" | ") || "No note";
+}
+
+function renderBattleTurnRow(battle, turn) {
+  const row = el("li", "turn-preview-card");
+  const header = el("div", "turn-preview-header");
+  header.append(el("strong", "", `Turn ${turn.number}`));
+  row.append(header);
+
+  appendTurnPreviewLines(row, battle, turn);
+  return row;
+}
+
+function appendTurnPreviewLines(container, battle, turn) {
+  const board = boardBeforeTurn(battle, turn.number);
+  const boardStart = previewBoard(board, turn, { includeSwitches: false, includeKos: false });
+  const boardAfter = previewBoard(board, turn);
+  container.append(el("p", "turn-preview-line", `Start: ${battleBoardLine(boardStart)}`));
+  if (turn.note) {
+    container.append(el("p", "turn-preview-line", turn.note));
+  }
+  const summary = turnEventSummary(turn);
+  if (summary !== "No note") {
+    container.append(el("p", "turn-preview-line is-muted", summary));
+  }
+  container.append(el("p", "turn-preview-line is-muted", `After: ${battleBoardLine(boardAfter)}`));
+}
+
+function battleBoardLine(board) {
+  const mySide = board.myActive.length ? board.myActive.join(" + ") : "?";
+  const opponentSide = board.opponentActive.length ? board.opponentActive.join(" + ") : "?";
+  return `${mySide} vs ${opponentSide}`;
 }
 
 function turnEventGroups(turn) {
@@ -1254,7 +1270,7 @@ function renderReview() {
   resultGroup.append(resultRow);
 
   const turnGroup = el("div", "group");
-  turnGroup.append(el("div", "group-title", "Turno chiave"));
+  turnGroup.append(el("div", "group-title", "Key Turn"));
   const turnGrid = el("div", "review-turn-list");
   const turns = draft.turns;
   if (!draft.errorTurn) draft.errorTurn = String(turns[0].number);
@@ -1263,17 +1279,18 @@ function renderReview() {
     const board = boardBeforeTurn(draft, turn.number);
     const boardStart = previewBoard(board, turn, { includeSwitches: false, includeKos: false });
     const boardAfter = previewBoard(board, turn);
-    const pick = el("button", "review-turn-pick");
-    pick.type = "button";
-    pick.classList.toggle("is-selected", draft.errorTurn === String(turn.number));
-    pick.append(
-      el("strong", "", `Turn ${turn.number}`),
-      el("span", "review-turn-badge", draft.errorTurn === String(turn.number) ? "Turno chiave" : "Select")
+    const header = el("div", "archive-turn-header");
+    const pick = el(
+      "button",
+      draft.errorTurn === String(turn.number) ? "result-chip is-key key-turn-button" : "tiny-button key-turn-button",
+      draft.errorTurn === String(turn.number) ? "Key turn" : "Set key turn"
     );
+    pick.type = "button";
     pick.addEventListener("click", () => {
       draft.errorTurn = String(turn.number);
       render();
     });
+    header.append(el("strong", "", `Turn ${turn.number}`), pick);
 
     const feedbackField = el("div", "field compact-field");
     const feedbackLabel = el("label", "", "Feedback");
@@ -1281,14 +1298,14 @@ function renderReview() {
     const feedback = el("input", "mini-input");
     feedback.id = `turnFeedback${turn.number}`;
     feedback.value = turn.feedback ?? "";
-    feedback.placeholder = "Cosa cambierei / cosa ho imparato";
+    feedback.placeholder = "What I would change / what I learned";
     feedback.addEventListener("input", () => {
       turn.feedback = feedback.value;
       feedback.value = turn.feedback;
     });
     feedbackField.append(feedbackLabel, feedback);
 
-    card.append(pick, boardPanel("Start", boardStart.myActive, boardStart.opponentActive));
+    card.append(header, boardPanel("Start", boardStart.myActive, boardStart.opponentActive));
     if (turn.note) card.append(el("p", "archive-note", turn.note));
     const events = rosterBlock("Turn events", turnEventGroups(turn), false);
     if (events) card.append(events);
@@ -1304,7 +1321,7 @@ function renderReview() {
   takeaway.id = "takeaway";
   takeaway.rows = 3;
   takeaway.value = draft.takeaway ?? "";
-  takeaway.placeholder = "Una cosa che mi porto via da questa partita";
+  takeaway.placeholder = "One thing I’m taking away from this battle";
   takeaway.addEventListener("input", () => {
     draft.takeaway = takeaway.value;
     takeaway.value = draft.takeaway;
@@ -1313,7 +1330,9 @@ function renderReview() {
 
   const saveButton = el("button", "primary", "Save");
   saveButton.type = "button";
+  saveButton.disabled = !["Win", "Loss"].includes(draft.result) || !opponentTeamReady(draft);
   saveButton.addEventListener("click", () => {
+    if (!["Win", "Loss"].includes(draft.result) || !opponentTeamReady(draft)) return;
     const team = activeTeam();
     const { editingTurnNumber, turnDraft, ...savedDraft } = draft;
     state.battles.unshift({
@@ -1381,20 +1400,21 @@ function renderDashboard() {
   const kpis = getDashboardKpis(filtered);
 
   const kpiGrid = el("div", "kpi-grid");
-  [
-    ["Matches", String(kpis.matches), kpis.matchesSub],
-    ["Win rate", `${kpis.winRate}%`, kpis.winRateSub],
-    ["Reviewed", `${kpis.reviewRate}%`, kpis.reviewSub],
-    ["Avg turns", kpis.avgTurns, kpis.avgTurnsSub],
-  ].forEach(([label, value, sub]) => {
-    const card = el("div", "dash-block kpi-card");
-    card.append(
-      el("div", "dash-label", label),
-      el("div", "kpi-value", value),
-      el("div", "kpi-sub", sub)
-    );
-    kpiGrid.append(card);
-  });
+  const matchesCard = el("div", "dash-block kpi-card");
+  matchesCard.append(
+    el("div", "dash-label", "Matches"),
+    el("div", "kpi-value", String(kpis.matches)),
+    el("div", "kpi-sub", kpis.matchesSub)
+  );
+  kpiGrid.append(matchesCard);
+
+  const winRateCard = el("div", "dash-block kpi-card");
+  winRateCard.append(
+    el("div", "dash-label", "Win rate"),
+    el("div", "kpi-value", `${kpis.winRate}%`),
+    winLossSubline(kpis.wins, kpis.losses)
+  );
+  kpiGrid.append(winRateCard);
 
   const performanceBlock = el("div", `dash-block trend-${performance.trend}`);
   const performanceLine = el("div", "performance-line");
@@ -1406,17 +1426,7 @@ function renderDashboard() {
     el("div", "dash-sub", `${rangeLabel()} · ${performance.matchesLabel}`)
   );
 
-  const insights = el("div", "insight-grid");
-  [
-    ["Most faced", kpis.topArchetype],
-    ["Common lead", kpis.topLead],
-  ].forEach(([label, value]) => {
-    const card = el("div", "dash-block");
-    card.append(el("div", "dash-label", label), el("p", "dash-text", value));
-    insights.append(card);
-  });
-
-  screen.append(controls, performanceBlock, kpiGrid, insights);
+  screen.append(controls, performanceBlock, kpiGrid);
 }
 
 function renderTeams() {
@@ -1427,17 +1437,27 @@ function renderTeams() {
 
   const active = activeTeam();
   const activeBlock = el("div", "dash-block");
-  activeBlock.append(el("div", "dash-label", "Active team"), teamNames(active.names));
+  activeBlock.append(el("div", "dash-label", "Active Team"), teamNames(active.names));
+
+  const addTeamButton = el("button", "primary", "Add team");
+  addTeamButton.type = "button";
+  addTeamButton.addEventListener("click", () => {
+    state.parsedTeam = [];
+    state.teamImportOpen = true;
+    render();
+  });
 
   const savedGroup = el("div", "group");
-  savedGroup.append(el("div", "group-title", "Saved teams"));
+  savedGroup.append(el("div", "group-title", "Saved Teams"));
   const list = el("div", "team-list");
   state.teams.forEach((team) => {
     const row = el("div", "team-card");
     row.classList.toggle("is-active", team.id === state.activeTeamId);
 
     const body = el("div", "team-card-main");
-    body.append(el("strong", "", team.name), el("span", "", team.names.join(" / ")));
+    const copy = el("div", "team-card-copy");
+    copy.append(el("strong", "", team.name), el("span", "", team.names.join(" / ")));
+    body.append(copy);
 
     const actions = el("div", "team-card-actions");
     if (team.id === state.activeTeamId) {
@@ -1449,19 +1469,23 @@ function renderTeams() {
       const setActive = el("button", "tiny-button", "Set active");
       setActive.type = "button";
       setActive.addEventListener("click", () => activateTeam(team.id));
-
-      const remove = el("button", "tiny-button", "Delete");
-      remove.type = "button";
-      remove.addEventListener("click", () => deleteTeam(team.id));
-      actions.append(setActive, remove);
+      actions.append(setActive);
     }
+
+    const remove = el("button", "tiny-button is-danger", "Delete");
+    remove.type = "button";
+    remove.addEventListener("click", () => {
+      if (!confirm("Delete this team? This cannot be undone.")) return;
+      deleteTeam(team.id);
+    });
+    actions.append(remove);
 
     row.append(body, actions);
     list.append(row);
   });
   savedGroup.append(list);
 
-  screen.append(activeBlock, savedGroup);
+  screen.append(activeBlock, addTeamButton, savedGroup);
 }
 
 function activateTeam(teamId) {
@@ -1502,26 +1526,28 @@ function renderArchive() {
 
     card.append(
       header,
-      compactRosterRow("Io", myTeam, (name) => {
+      compactRosterRow("Me", myTeam, (name) => {
         if (myLead.includes(name)) return "lead";
         if (myBack.includes(name)) return "back";
         return "";
       }),
-      compactRosterRow("Lui", opponentTeam, (name) => {
-        if (opponentLead.includes(name)) return "lead";
-        if (opponentBack.includes(name)) return "back";
+      compactRosterRow("Opp", opponentTeam, (name) => {
+        if (opponentLead.includes(name)) return "lead-outline";
+        if (opponentBack.includes(name)) return "back-outline";
         return "";
       })
     );
     if (battle.note) {
-      const snapshot = el("div", "archive-card-copy");
-      snapshot.append(el("div", "archive-card-label", "Battle snapshot"), el("p", "archive-card-text", battle.note));
-      card.append(snapshot);
-    }
-    if (battle.takeaway) {
-      const takeaway = el("div", "archive-card-copy");
-      takeaway.append(el("div", "archive-card-label", "Takeaway"), el("p", "archive-card-text", battle.takeaway));
-      card.append(takeaway);
+      const preview = el("div", "turn-preview-card archive-card-preview");
+      preview.append(el("p", "turn-preview-line", `Battle snapshot: ${battle.note}`));
+      if (battle.takeaway) {
+        preview.append(el("p", "turn-preview-line is-muted", `Takeaway: ${battle.takeaway}`));
+      }
+      card.append(preview);
+    } else if (battle.takeaway) {
+      const preview = el("div", "turn-preview-card archive-card-preview");
+      preview.append(el("p", "turn-preview-line is-muted", `Takeaway: ${battle.takeaway}`));
+      card.append(preview);
     }
     card.addEventListener("click", () => {
       state.archiveDetailId = String(index);
@@ -1541,40 +1567,47 @@ function renderArchiveDetail() {
   }
 
   const summary = el("div", "dash-block");
-  summary.append(
-    el("div", "dash-label", `${battle.result} · ${formatDate(battle.savedAt ?? battle.createdAt)}`),
-    el("p", "dash-text", battle.archetypes.length ? battle.archetypes.join(" / ") : "Opponent unknown")
+  const summaryHeader = el("div", "archive-card-header");
+  summaryHeader.append(
+    el("strong", "", formatDate(battle.savedAt ?? battle.createdAt)),
+    resultChip(battle.result)
   );
+  summary.append(summaryHeader);
 
-  const opponent = rosterBlock("Opponent preview", [
+  const opponent = rosterBlock("Opponent Preview", [
     { label: "Team", names: (battle.opponentTeam ?? []).filter(Boolean) },
     { label: "Lead", names: battle.opponentLead ?? [] },
   ]);
 
-  const team = rosterBlock("My preview", [
+  const team = rosterBlock("My Preview", [
     { label: "Lead", names: battle.lead ?? battle.used.slice(0, 2), tone: "lead" },
     { label: "Back", names: battle.back ?? battle.used.slice(2, 4), tone: "back" },
   ]);
 
   const turns = el("div", "group");
-  turns.append(el("div", "group-title", "Turn notes"));
+  turns.append(el("div", "group-title", "Turn Notes"));
   const turnList = el("div", "archive-turns");
   if (battle.turns?.length) {
     battle.turns.forEach((turn) => {
       const card = el("div", "archive-turn-card");
-      const board = boardBeforeTurn(battle, turn.number);
-      const boardStart = previewBoard(board, turn, { includeSwitches: false, includeKos: false });
-      const boardAfter = previewBoard(board, turn);
       const header = el("div", "archive-turn-header");
+      const keyTurnButton = el(
+        "button",
+        battle.errorTurn === String(turn.number) ? "result-chip is-key key-turn-button" : "tiny-button key-turn-button",
+        battle.errorTurn === String(turn.number) ? "Key turn" : "Set key turn"
+      );
+      keyTurnButton.type = "button";
+      keyTurnButton.addEventListener("click", () => {
+        battle.errorTurn = String(turn.number);
+        writeJson(STORAGE.battles, state.battles);
+        render();
+      });
       header.append(
         el("strong", "archive-turn-title", `Turn ${turn.number}`),
-        battle.errorTurn === String(turn.number) ? el("span", "result-chip is-key", "Turno chiave") : el("span", "archive-turn-spacer")
+        keyTurnButton
       );
-      card.append(header, boardPanel("Start", boardStart.myActive, boardStart.opponentActive));
-      if (turn.note) card.append(el("p", "archive-note", turn.note));
-      const events = rosterBlock("Turn events", turnEventGroups(turn), false);
-      if (events) card.append(events);
-      card.append(boardPanel("After", boardAfter.myActive, boardAfter.opponentActive));
+      card.append(header);
+      appendTurnPreviewLines(card, battle, turn);
 
       const feedbackField = el("div", "field compact-field");
       const feedbackLabel = el("label", "", "Feedback");
@@ -1602,7 +1635,9 @@ function renderArchiveDetail() {
   const review = el("div", "dash-block");
   review.append(el("div", "dash-label", "Review"));
   if (battle.errorTurn) {
-    review.append(el("p", "dash-text", `Turno chiave: T${battle.errorTurn}`));
+    review.append(el("p", "dash-text", `Key turn: T${battle.errorTurn}`));
+  } else {
+    review.append(el("p", "dash-text", "No key turn selected."));
   }
 
   const snapshotField = el("div", "field compact-field");
@@ -1639,7 +1674,17 @@ function renderArchiveDetail() {
 
   review.append(snapshotField, takeawayField);
 
-  [summary, opponent, team, turns, review].filter(Boolean).forEach((node) => screen.append(node));
+  const danger = el("div", "dash-block danger-block");
+  danger.append(el("div", "dash-label", "Danger"));
+  const deleteBattleButton = el("button", "danger-button", "Delete battle");
+  deleteBattleButton.type = "button";
+  deleteBattleButton.addEventListener("click", () => {
+    if (!confirm("Delete this battle? This cannot be undone.")) return;
+    deleteBattle(Number(state.archiveDetailId));
+  });
+  danger.append(deleteBattleButton);
+
+  [summary, opponent, team, turns, review, danger].filter(Boolean).forEach((node) => screen.append(node));
 }
 
 function rosterBlock(title, groups, framed = true) {
@@ -1678,7 +1723,7 @@ function compactRosterRow(label, names, toneForName) {
 
 function resultChip(result) {
   const tone = result === "Win" ? "is-win" : result === "Loss" ? "is-loss" : "";
-  return el("span", `result-chip ${tone}`.trim(), result || "Open");
+  return el("span", `result-chip ${tone}`.trim(), result || "Pending");
 }
 
 function observedOpponentBack(battle) {
@@ -1702,10 +1747,10 @@ function renderSettings() {
   const backup = el("div", "dash-block");
   backup.append(
     el("div", "dash-label", "Backup"),
-    el("p", "dash-text", "Export or import all local app data.")
+    el("p", "dash-text", "Export or import your full app data backup.")
   );
 
-  const exportAll = el("button", "secondary", "Export all JSON");
+  const exportAll = el("button", "secondary", "Export data backup (JSON)");
   exportAll.type = "button";
   exportAll.addEventListener("click", () => {
     download("vgc-notes-backup.json", JSON.stringify(createBackup(), null, 2), "application/json;charset=utf-8");
@@ -1720,18 +1765,12 @@ function renderSettings() {
     importInput.value = "";
   });
 
-  const importAll = el("button", "secondary", "Import all JSON");
+  const importAll = el("button", "secondary", "Import data backup (JSON)");
   importAll.type = "button";
   importAll.addEventListener("click", () => importInput.click());
 
-  const coachCsv = el("button", "secondary", "Export coach CSV");
-  coachCsv.type = "button";
-  coachCsv.addEventListener("click", () => {
-    download("vgc-coach-export.csv", toCoachCsv(), "text/csv;charset=utf-8");
-  });
-
   const actions = el("div", "settings-grid");
-  actions.append(exportAll, importAll, coachCsv, importInput);
+  actions.append(exportAll, importAll, importInput);
 
   const danger = el("div", "dash-block danger-block");
   danger.append(el("div", "dash-label", "Danger"), el("p", "dash-text", "Delete all teams and battles from this browser."));
@@ -1772,6 +1811,14 @@ function deleteTeam(teamId) {
   writeJson(STORAGE.teams, state.teams);
   writeJson(STORAGE.activeTeamId, state.activeTeamId);
   writeJson(STORAGE.team, activeTeamNames());
+  render();
+}
+
+function deleteBattle(index) {
+  if (index < 0 || index >= state.battles.length) return;
+  state.battles.splice(index, 1);
+  writeJson(STORAGE.battles, state.battles);
+  state.archiveDetailId = "";
   render();
 }
 
@@ -1917,6 +1964,8 @@ function getDashboardSeries(battles) {
 
 function getDashboardKpis(filteredBattles) {
   const decided = filteredBattles.filter((battle) => ["Win", "Loss"].includes(battle.result));
+  const wins = decided.filter((battle) => battle.result === "Win").length;
+  const losses = decided.filter((battle) => battle.result === "Loss").length;
   const reviewed = filteredBattles.filter(hasReviewData);
   const avgTurns = filteredBattles.length
     ? (filteredBattles.reduce((sum, battle) => sum + (battle.turns?.length ?? 0), 0) / filteredBattles.length).toFixed(1)
@@ -1926,7 +1975,8 @@ function getDashboardKpis(filteredBattles) {
     matches: filteredBattles.length,
     matchesSub: rangeLabel(),
     winRate: getRate(decided),
-    winRateSub: decided.length ? `${decided.length} decided` : "No result yet",
+    wins,
+    losses,
     reviewRate: filteredBattles.length ? Math.round((reviewed.length / filteredBattles.length) * 100) : 0,
     reviewSub: reviewed.length ? `${reviewed.length} with takeaway/feedback` : "No review notes",
     avgTurns,
@@ -1975,6 +2025,21 @@ function getRate(battles) {
   if (!battles.length) return 0;
   const wins = battles.filter((battle) => battle.result === "Win").length;
   return Math.round((wins / battles.length) * 100);
+}
+
+function winLossSubline(wins, losses) {
+  const row = el("div", "kpi-sub kpi-sub-stats");
+  if (!wins && !losses) {
+    row.textContent = "No result yet";
+    return row;
+  }
+
+  row.append(
+    el("span", "kpi-sub-stat is-win", `W: ${wins}`),
+    el("span", "kpi-sub-divider", "/"),
+    el("span", "kpi-sub-stat is-loss", `L: ${losses}`)
+  );
+  return row;
 }
 
 function getPerformanceSeries() {
@@ -2100,7 +2165,7 @@ function importBackupFile(file) {
       writeJson(STORAGE.team, activeTeamNames());
       setPage("dashboard");
     } catch {
-      alert("Backup non valido.");
+      alert("Invalid backup.");
     }
   });
   reader.readAsText(file);
@@ -2113,7 +2178,7 @@ function handleBattleReplayFile(file) {
       state.replayImport = parseShowdownReplayHtml(String(reader.result));
       render();
     } catch {
-      alert("Replay HTML non valido.");
+      alert("Invalid replay HTML.");
     }
   });
   reader.readAsText(file);
@@ -2398,112 +2463,87 @@ function toCoachCsv() {
     "match_number_newest_first",
     "saved_at",
     "result",
-    "opponent_archetypes",
-    "opponent_pokemon",
-    "opponent_lead",
     "team_name",
-    "team_pokemon",
-    "lead",
-    "back",
-    "pokemon_used",
-    "battle_note",
-    "turn_notes",
+    "my_team",
+    "my_lead",
+    "my_back",
+    "opponent_team",
+    "opponent_lead",
+    "opponent_back_seen",
+    "battle_snapshot",
+    "takeaway",
+    "turn_number",
+    "is_key_turn",
+    "start_board",
+    "turn_note",
     "my_entries",
     "opponent_entries",
-    "my_active_start",
-    "opponent_active_start",
-    "my_active_end",
-    "opponent_active_end",
     "my_switches",
     "opponent_switches",
     "my_kos",
     "opponent_kos",
+    "end_board",
     "turn_feedback",
-    "key_turn",
-    "takeaway",
   ];
 
-  const rows = state.battles.map((battle, index) => {
+  const rows = state.battles.flatMap((battle, index) => {
     const team = battle.teamNames?.length ? battle.teamNames : battle.used ?? [];
-    return [
+    const base = [
       index + 1,
       battle.savedAt ?? battle.createdAt ?? "",
       battle.result ?? "",
-      (battle.archetypes ?? []).join(" / "),
-      (battle.opponentTeam ?? []).filter(Boolean).join(" / "),
-      (battle.opponentLead ?? []).join(" / "),
       battle.teamName || (team.length >= 2 ? teamLabel(team) : ""),
       team.join(" / "),
       (battle.lead ?? battle.used?.slice(0, 2) ?? []).join(" / "),
       (battle.back ?? battle.used?.slice(2, 4) ?? []).join(" / "),
-      (battle.used ?? []).join(" / "),
+      (battle.opponentTeam ?? []).filter(Boolean).join(" / "),
+      (battle.opponentLead ?? []).join(" / "),
+      observedOpponentBack(battle).join(" / "),
       battle.note ?? "",
-      (battle.turns ?? []).map((turn) => `T${turn.number}: ${turn.note}`).join(" | "),
-      (battle.turns ?? [])
-        .filter((turn) => turn.myEntries?.length)
-        .map((turn) => `T${turn.number}: ${turn.myEntries.join(" / ")}`)
-        .join(" | "),
-      (battle.turns ?? [])
-        .filter((turn) => turn.opponentEntries?.length)
-        .map((turn) => `T${turn.number}: ${turn.opponentEntries.join(" / ")}`)
-        .join(" | "),
-      (battle.turns ?? [])
-        .map((turn) => {
-          const board = previewBoard(boardBeforeTurn(battle, turn.number), turn, { includeSwitches: false, includeKos: false });
-          return board.myActive.length ? `T${turn.number}: ${board.myActive.join(" / ")}` : "";
-        })
-        .filter(Boolean)
-        .join(" | "),
-      (battle.turns ?? [])
-        .map((turn) => {
-          const board = previewBoard(boardBeforeTurn(battle, turn.number), turn, { includeSwitches: false, includeKos: false });
-          return board.opponentActive.length ? `T${turn.number}: ${board.opponentActive.join(" / ")}` : "";
-        })
-        .filter(Boolean)
-        .join(" | "),
-      (battle.turns ?? [])
-        .map((turn) => {
-          const board = previewBoard(boardBeforeTurn(battle, turn.number), turn);
-          return board.myActive.length ? `T${turn.number}: ${board.myActive.join(" / ")}` : "";
-        })
-        .filter(Boolean)
-        .join(" | "),
-      (battle.turns ?? [])
-        .map((turn) => {
-          const board = previewBoard(boardBeforeTurn(battle, turn.number), turn);
-          return board.opponentActive.length ? `T${turn.number}: ${board.opponentActive.join(" / ")}` : "";
-        })
-        .filter(Boolean)
-        .join(" | "),
-      (battle.turns ?? [])
-        .map((turn) => {
-          const text = switchText(turn.mySwitchPairs, turn.mySwitches);
-          return text ? `T${turn.number}: ${text}` : "";
-        })
-        .filter(Boolean)
-        .join(" | "),
-      (battle.turns ?? [])
-        .map((turn) => {
-          const text = switchText(turn.opponentSwitchPairs, turn.opponentSwitches);
-          return text ? `T${turn.number}: ${text}` : "";
-        })
-        .filter(Boolean)
-        .join(" | "),
-      (battle.turns ?? [])
-        .filter((turn) => turn.myKos?.length)
-        .map((turn) => `T${turn.number}: ${turn.myKos.join(" / ")}`)
-        .join(" | "),
-      (battle.turns ?? [])
-        .filter((turn) => turn.opponentKos?.length)
-        .map((turn) => `T${turn.number}: ${turn.opponentKos.join(" / ")}`)
-        .join(" | "),
-      (battle.turns ?? [])
-        .filter((turn) => turn.feedback)
-        .map((turn) => `T${turn.number}: ${turn.feedback}`)
-        .join(" | "),
-      battle.errorTurn ? `T${battle.errorTurn}` : "",
       battle.takeaway ?? battle.finalRule ?? battle.betterLine ?? "",
     ];
+
+    if (!battle.turns?.length) {
+      return [[
+        ...base,
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+        "",
+      ]];
+    }
+
+    return battle.turns.map((turn) => {
+      const boardStart = previewBoard(boardBeforeTurn(battle, turn.number), turn, {
+        includeSwitches: false,
+        includeKos: false,
+      });
+      const boardEnd = previewBoard(boardBeforeTurn(battle, turn.number), turn);
+
+      return [
+        ...base,
+        turn.number,
+        battle.errorTurn === String(turn.number) ? "YES" : "",
+        battleBoardLine(boardStart),
+        turn.note ?? "",
+        (turn.myEntries ?? []).join(" / "),
+        (turn.opponentEntries ?? []).join(" / "),
+        switchText(turn.mySwitchPairs, turn.mySwitches),
+        switchText(turn.opponentSwitchPairs, turn.opponentSwitches),
+        (turn.myKos ?? []).join(" / "),
+        (turn.opponentKos ?? []).join(" / "),
+        battleBoardLine(boardEnd),
+        turn.feedback ?? "",
+      ];
+    });
   });
 
   return [headers, ...rows].map((row) => row.map(csvCell).join(",")).join("\n");
@@ -2519,13 +2559,20 @@ function download(filename, content, type = "text/plain;charset=utf-8") {
   const link = document.createElement("a");
   link.href = url;
   link.download = filename;
-  link.click();
-  URL.revokeObjectURL(url);
+  link.rel = "noopener";
+  link.style.display = "none";
+  document.body.append(link);
+  link.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, view: window }));
+  window.setTimeout(() => {
+    link.remove();
+    URL.revokeObjectURL(url);
+  }, 1000);
 }
 
-function svgEl(tag, attrs = {}) {
+function svgEl(tag, attrs = {}, children = []) {
   const node = document.createElementNS("http://www.w3.org/2000/svg", tag);
   Object.entries(attrs).forEach(([key, value]) => node.setAttribute(key, value));
+  children.forEach((child) => node.append(child));
   return node;
 }
 

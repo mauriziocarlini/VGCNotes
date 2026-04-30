@@ -87,6 +87,17 @@ button {
   font-weight: 900;
 }
 
+.top-action.is-text {
+  width: auto;
+  height: 36px;
+  padding: 0 12px;
+  border: 1px solid var(--line);
+  background: var(--button);
+  color: var(--text);
+  font-size: 0.84rem;
+  font-weight: 900;
+}
+
 .kicker {
   margin: 0 0 4px;
   color: var(--accent);
@@ -143,6 +154,13 @@ h1 {
   display: flex;
   flex-direction: column;
   gap: 10px;
+}
+
+.battle-section {
+  padding: 14px 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: rgba(16, 20, 26, 0.72);
 }
 
 .group-header {
@@ -256,8 +274,54 @@ input {
   gap: 8px;
 }
 
+.pokemon-field {
+  position: relative;
+  min-width: 0;
+}
+
 .opponent-input {
   min-height: 46px;
+}
+
+.pokemon-menu {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  right: 0;
+  z-index: 20;
+  display: grid;
+  gap: 4px;
+  max-height: 216px;
+  overflow-y: auto;
+  padding: 6px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel-strong);
+  box-shadow: 0 16px 30px rgba(0, 0, 0, 0.32);
+}
+
+.pokemon-menu[hidden] {
+  display: none;
+}
+
+.pokemon-option {
+  min-height: 38px;
+  display: flex;
+  align-items: center;
+  width: 100%;
+  padding: 0 10px;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text);
+  text-align: left;
+  font-size: 0.88rem;
+  font-weight: 800;
+}
+
+.pokemon-option:active,
+.pokemon-option:focus-visible {
+  outline: none;
+  background: rgba(255, 255, 255, 0.08);
 }
 
 .mini-chip-group,
@@ -508,22 +572,15 @@ input {
   opacity: 0.42;
 }
 
+.tiny-button.is-danger {
+  background: rgba(255, 117, 111, 0.12);
+  border-color: rgba(255, 117, 111, 0.5);
+  color: #ff9b96;
+}
+
 .turn-controls {
   display: grid;
   gap: 8px;
-}
-
-.turn-entry-row {
-  display: grid;
-  grid-template-columns: auto minmax(0, 1fr);
-  align-items: stretch;
-  gap: 8px;
-}
-
-.turn-entry-actions {
-  display: grid;
-  gap: 8px;
-  align-content: start;
 }
 
 .icon-button {
@@ -538,30 +595,81 @@ input {
   white-space: nowrap;
 }
 
+.icon-button:disabled {
+  opacity: 0.42;
+}
+
 .save-turn-button {
-  min-width: 132px;
+  width: 100%;
   min-height: 46px;
+  padding: 0 12px;
+  font-size: 0.92rem;
+  font-weight: 900;
   white-space: nowrap;
 }
 
-.turn-row {
+.secondary.save-turn-button {
+  min-height: 46px;
+  background: #d7a7ff;
+  border-color: #d7a7ff;
+  color: #1d1326;
+}
+
+.secondary.save-turn-button:disabled {
+  opacity: 0.42;
+}
+
+.turn-compose-card {
   display: grid;
-  grid-template-columns: auto minmax(0, 1fr);
-  justify-content: start;
-  color: var(--muted);
+  gap: 10px;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: rgba(23, 28, 35, 0.92);
 }
 
-.turn-row.has-actions {
-  grid-template-columns: auto minmax(0, 1fr) auto;
+.turn-preview-card {
+  min-width: 0;
+  display: grid;
+  gap: 6px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel);
 }
 
-.turn-row strong {
+.turn-preview-header {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  align-items: center;
+}
+
+.turn-preview-header strong {
   color: var(--text);
+}
+
+.turn-preview-line {
+  margin: 0;
+  color: var(--text);
+  font-size: 0.82rem;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+
+.turn-preview-line + .turn-preview-line {
+  padding-top: 6px;
+  border-top: 1px solid rgba(41, 49, 59, 0.72);
+}
+
+.turn-preview-line.is-muted {
+  color: var(--muted);
+  font-size: 0.78rem;
 }
 
 .turn-actions {
   display: flex;
   gap: 6px;
+  justify-content: flex-end;
 }
 
 .turn-actions .tiny-button {
@@ -693,6 +801,25 @@ input {
   color: var(--muted);
   font-size: 0.84rem;
   font-weight: 800;
+}
+
+.kpi-sub-stats {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.kpi-sub-stat.is-win {
+  color: var(--accent);
+}
+
+.kpi-sub-stat.is-loss {
+  color: var(--danger);
+}
+
+.kpi-sub-divider {
+  color: var(--muted);
 }
 
 .dash-label {
@@ -849,10 +976,22 @@ input {
   text-align: left;
 }
 
+.team-card-main {
+  min-height: 86px;
+  align-content: center;
+}
+
 .team-card-actions {
   display: grid;
   gap: 8px;
-  align-content: start;
+  grid-template-rows: repeat(2, 1fr);
+  align-content: stretch;
+  width: 92px;
+}
+
+.team-card-actions .tiny-button {
+  width: 100%;
+  min-height: 39px;
 }
 
 .archive-card {
@@ -862,7 +1001,7 @@ input {
 .archive-card-header {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
-  align-items: start;
+  align-items: center;
   gap: 10px;
 }
 
@@ -899,10 +1038,24 @@ input {
   border-color: var(--accent);
 }
 
+.team-card-copy {
+  min-width: 0;
+  display: grid;
+  gap: 6px;
+}
+
 .team-card-main span,
 .archive-card span {
   min-width: 0;
   color: var(--muted);
+}
+
+.team-card-main span {
+  display: -webkit-box;
+  overflow: hidden;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  line-height: 1.3;
 }
 
 .archive-card strong,
@@ -911,6 +1064,10 @@ input {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.archive-card-preview {
+  padding: 8px 10px;
 }
 
 .archive-turn {
@@ -951,24 +1108,6 @@ input {
 
 .archive-turn-title {
   color: var(--text);
-}
-
-.archive-turn-spacer {
-  display: none;
-}
-
-.archive-note {
-  margin: 0;
-  color: var(--text);
-  line-height: 1.3;
-  overflow-wrap: anywhere;
-}
-
-.archive-card-text {
-  margin: 0;
-  color: var(--text);
-  line-height: 1.35;
-  overflow-wrap: anywhere;
 }
 
 .archive-feedback-input {
@@ -1017,6 +1156,10 @@ input {
   color: #fbf5ff;
 }
 
+.key-turn-button {
+  min-height: 32px;
+}
+
 .roster-block {
   gap: 10px;
 }
@@ -1038,6 +1181,7 @@ input {
   align-items: center;
   padding: 5px 9px;
   border-radius: 8px;
+  border: 1px solid transparent;
   background: var(--button);
   color: var(--text);
   font-size: 0.86rem;
@@ -1053,6 +1197,18 @@ input {
 .roster-chip.is-back {
   background: #34253f;
   color: #fbf5ff;
+}
+
+.roster-chip.is-lead-outline {
+  background: transparent;
+  border-color: #2b9c86;
+  color: #8ff2df;
+}
+
+.roster-chip.is-back-outline {
+  background: transparent;
+  border-color: #9b70d3;
+  color: #d9c0ff;
 }
 
 .roster-chip.is-ko {
@@ -1188,7 +1344,9 @@ input {
 .nav-button {
   min-width: 0;
   min-height: 44px;
-  padding: 0 4px;
+  display: grid;
+  place-items: center;
+  padding: 0;
   border-radius: 8px;
   background: transparent;
   color: var(--muted);
@@ -1196,9 +1354,40 @@ input {
   font-weight: 900;
 }
 
+.nav-button.is-icon {
+  padding: 0;
+}
+
+.nav-icon {
+  width: 21px;
+  height: 21px;
+  display: block;
+  flex: 0 0 auto;
+  object-fit: contain;
+  opacity: 0.72;
+  filter: invert(67%) sepia(9%) saturate(389%) hue-rotate(172deg) brightness(92%) contrast(88%);
+}
+
 .nav-button.is-active {
   background: var(--button);
   color: var(--text);
+}
+
+.nav-button.is-active .nav-icon {
+  opacity: 1;
+  filter: invert(96%) sepia(8%) saturate(120%) hue-rotate(174deg) brightness(102%) contrast(97%);
+}
+
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
 }
 
 .hint {
