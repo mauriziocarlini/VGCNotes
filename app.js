@@ -444,7 +444,7 @@ function renderBattle() {
   const addTurn = el("button", "icon-button", editingTurn ? "Save turn" : `Add turn (${draft.turns.length + 1})`);
   addTurn.type = "button";
   addTurn.ariaLabel = editingTurn ? "Save turn" : `Add turn ${draft.turns.length + 1}`;
-  addTurn.disabled = turnEntryStatus.mustResolveEntries || nextTurnEntryStatus.mustResolveEntries;
+  addTurn.disabled = turnEntryStatus.mustResolveEntries || (!editingTurn && nextTurnEntryStatus.mustResolveEntries);
   const turnInput = el("textarea", "turn-note-input");
   turnInput.rows = 1;
   turnInput.value = draft.turnDraft.note;
