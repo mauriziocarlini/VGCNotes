@@ -306,26 +306,35 @@ function renderImport() {
   const namesGroup = el("div", "group");
   namesGroup.append(el("div", "group-title", "Team"));
 
+  const datalistId = "teamPokemonSuggestions";
+  const datalist = el("datalist");
+  datalist.id = datalistId;
+  POKEMON_NAMES.forEach((name) => {
+    const option = el("option");
+    option.value = name;
+    datalist.append(option);
+  });
+
   const grid = el("div", "opponent-grid");
   currentNames.forEach((name, index) => {
-    const field = buildPokemonSuggestField({
-      value: name,
-      suggestions: POKEMON_NAMES,
-      maxLength: 40,
-      onInput: (nextValue) => {
-        currentNames[index] = nextValue;
-        state.parsedTeam = [...currentNames];
-        saveButton.disabled = !isImportedTeamReady(currentNames);
-      },
-      onCommit: (nextValue) => {
-        currentNames[index] = nextValue.trim();
-        state.parsedTeam = [...currentNames];
-        saveButton.disabled = !isImportedTeamReady(currentNames);
-      },
+    const input = el("input", "mini-input opponent-input");
+    input.setAttribute("list", datalistId);
+    input.value = name;
+    enableNativeSuggest(input);
+    input.addEventListener("input", () => {
+      currentNames[index] = input.value.slice(0, 40);
+      state.parsedTeam = [...currentNames];
+      saveButton.disabled = !isImportedTeamReady(currentNames);
     });
-    grid.append(field);
+    input.addEventListener("blur", () => {
+      currentNames[index] = input.value.trim();
+      state.parsedTeam = [...currentNames];
+      input.value = currentNames[index];
+      saveButton.disabled = !isImportedTeamReady(currentNames);
+    });
+    grid.append(input);
   });
-  namesGroup.append(grid);
+  namesGroup.append(datalist, grid);
 
   const saveButton = el("button", "primary", "Save team");
   saveButton.type = "button";
@@ -673,24 +682,34 @@ function renderOpponentTeam(draft) {
   const group = el("div", "group");
   group.append(el("div", "group-title", "Opponent Team"));
 
+  const datalistId = "pokemonSuggestions";
+  const datalist = el("datalist");
+  datalist.id = datalistId;
+  pokemonSuggestions(draft).forEach((name) => {
+    const option = el("option");
+    option.value = name;
+    datalist.append(option);
+  });
+
   const grid = el("div", "opponent-grid");
   draft.opponentTeam.slice(0, 6).forEach((name, index) => {
-    const field = buildPokemonSuggestField({
-      value: name,
-      suggestions: pokemonSuggestions(draft),
-      maxLength: 32,
-      onInput: (nextValue) => {
-        draft.opponentTeam[index] = nextValue;
-        draft.opponentLead = draft.opponentLead.filter((lead) => filledOpponentTeam(draft).includes(lead));
-      },
-      onCommit: (nextValue) => {
-        draft.opponentTeam[index] = nextValue.trim();
-        render();
-      },
+    const input = el("input", "mini-input opponent-input");
+    input.setAttribute("list", datalistId);
+    input.value = name;
+    enableNativeSuggest(input);
+    input.addEventListener("input", () => {
+      draft.opponentTeam[index] = input.value.slice(0, 32);
+      draft.opponentLead = draft.opponentLead.filter((lead) => filledOpponentTeam(draft).includes(lead));
     });
-    grid.append(field);
+    input.addEventListener("blur", () => {
+      draft.opponentTeam[index] = input.value.trim();
+      input.value = draft.opponentTeam[index];
+        draft.opponentLead = draft.opponentLead.filter((lead) => filledOpponentTeam(draft).includes(lead));
+      render();
+    });
+    grid.append(input);
   });
-  group.append(grid);
+  group.append(datalist, grid);
 
   const opponentNames = filledOpponentTeam(draft);
   if (opponentNames.length) {
@@ -1085,83 +1104,18 @@ function pokemonSuggestions(draft) {
   return [...new Set([...POKEMON_NAMES, ...activeTeamNames(), ...filledOpponentTeam(draft)])].sort();
 }
 
-function buildPokemonSuggestField({ value = "", suggestions = [], onInput, onCommit, maxLength = 40 }) {
-  const wrap = el("div", "pokemon-field");
-  const input = el("input", "mini-input opponent-input");
-  const menu = el("div", "pokemon-menu");
-  input.value = value;
+function enableNativeSuggest(input) {
+  const openPicker = () => {
+    if (typeof input.showPicker !== "function") return;
+    try {
+      input.showPicker();
+    } catch {}
+  };
+
   input.autocomplete = "off";
   input.spellcheck = false;
-
-  let isOpen = false;
-
-  const closeMenu = () => {
-    isOpen = false;
-    wrap.classList.remove("is-open");
-    menu.hidden = true;
-  };
-
-  const getMatches = () => {
-    const query = input.value.trim().toLowerCase();
-    const names = [...new Set(suggestions.filter(Boolean))];
-    if (!query) return names.slice(0, 18);
-    const startsWith = names.filter((name) => name.toLowerCase().startsWith(query));
-    const contains = names.filter(
-      (name) => !name.toLowerCase().startsWith(query) && name.toLowerCase().includes(query)
-    );
-    return [...startsWith, ...contains].slice(0, 18);
-  };
-
-  const renderMenu = () => {
-    menu.innerHTML = "";
-    const matches = getMatches();
-    if (!isOpen || !matches.length) {
-      menu.hidden = true;
-      return;
-    }
-
-    matches.forEach((name) => {
-      const option = el("button", "pokemon-option", name);
-      option.type = "button";
-      option.addEventListener("mousedown", (event) => {
-        event.preventDefault();
-        input.value = name;
-        onInput?.(name);
-        onCommit?.(name);
-        closeMenu();
-      });
-      menu.append(option);
-    });
-    menu.hidden = false;
-  };
-
-  const openMenu = () => {
-    isOpen = true;
-    wrap.classList.add("is-open");
-    renderMenu();
-  };
-
-  input.addEventListener("focus", openMenu);
-  input.addEventListener("click", openMenu);
-  input.addEventListener("pointerdown", () => {
-    requestAnimationFrame(openMenu);
-  });
-  input.addEventListener("input", () => {
-    input.value = input.value.slice(0, maxLength);
-    onInput?.(input.value);
-    openMenu();
-  });
-  input.addEventListener("blur", () => {
-    window.setTimeout(() => {
-      input.value = input.value.trim();
-      onCommit?.(input.value);
-      closeMenu();
-    }, 120);
-  });
-
-  wrap.append(input, menu);
-  renderMenu();
-  return wrap;
+  input.addEventListener("focus", openPicker);
+  input.addEventListener("click", openPicker);
 }
 
 function toggleLimited(items, value, max) {
@@ -1512,10 +1466,8 @@ function renderArchive() {
   state.battles.forEach((battle, index) => {
     const card = el("button", "archive-card");
     card.type = "button";
-    const myTeam = battle.teamNames?.length ? battle.teamNames : activeTeamNames();
     const myLead = battle.lead ?? battle.used?.slice(0, 2) ?? [];
     const myBack = battle.back ?? battle.used?.slice(2, 4) ?? [];
-    const opponentTeam = (battle.opponentTeam ?? []).filter(Boolean);
     const opponentLead = battle.opponentLead ?? [];
     const opponentBack = observedOpponentBack(battle);
     const header = el("div", "archive-card-header");
@@ -1524,19 +1476,23 @@ function renderArchive() {
       resultChip(battle.result)
     );
 
-    card.append(
-      header,
-      compactRosterRow("Me", myTeam, (name) => {
-        if (myLead.includes(name)) return "lead";
-        if (myBack.includes(name)) return "back";
-        return "";
-      }),
-      compactRosterRow("Opp", opponentTeam, (name) => {
-        if (opponentLead.includes(name)) return "lead-outline";
-        if (opponentBack.includes(name)) return "back-outline";
-        return "";
-      })
+    const myPickGroup = el("div", "archive-card-pick-group is-my");
+    myPickGroup.append(
+      compactRosterRow("My lead", myLead, () => "lead-outline"),
+      compactRosterRow("My back", myBack, () => "back-outline")
     );
+
+    const oppPickGroup = el("div", "archive-card-pick-group is-opp");
+    if (opponentLead.length) {
+      oppPickGroup.append(compactRosterRow("Opp lead", opponentLead, () => "lead"));
+    }
+    if (opponentBack.length) {
+      oppPickGroup.append(compactRosterRow("Opp back", opponentBack, () => "back"));
+    }
+    card.append(header, myPickGroup);
+    if (oppPickGroup.childElementCount) {
+      card.append(oppPickGroup);
+    }
     if (battle.note) {
       const preview = el("div", "turn-preview-card archive-card-preview");
       preview.append(el("p", "turn-preview-line", `Battle snapshot: ${battle.note}`));
@@ -1574,14 +1530,15 @@ function renderArchiveDetail() {
   );
   summary.append(summaryHeader);
 
-  const opponent = rosterBlock("Opponent Preview", [
+  const opponent = rosterBlock("Opponent Picks", [
     { label: "Team", names: (battle.opponentTeam ?? []).filter(Boolean) },
-    { label: "Lead", names: battle.opponentLead ?? [] },
+    { label: "Lead", names: battle.opponentLead ?? [], tone: "lead" },
+    { label: "Back", names: observedOpponentBack(battle), tone: "back" },
   ]);
 
-  const team = rosterBlock("My Preview", [
-    { label: "Lead", names: battle.lead ?? battle.used.slice(0, 2), tone: "lead" },
-    { label: "Back", names: battle.back ?? battle.used.slice(2, 4), tone: "back" },
+  const team = rosterBlock("My Picks", [
+    { label: "Lead", names: battle.lead ?? battle.used.slice(0, 2), tone: "lead-outline" },
+    { label: "Back", names: battle.back ?? battle.used.slice(2, 4), tone: "back-outline" },
   ]);
 
   const turns = el("div", "group");
@@ -1684,7 +1641,7 @@ function renderArchiveDetail() {
   });
   danger.append(deleteBattleButton);
 
-  [summary, opponent, team, turns, review, danger].filter(Boolean).forEach((node) => screen.append(node));
+  [summary, team, opponent, turns, review, danger].filter(Boolean).forEach((node) => screen.append(node));
 }
 
 function rosterBlock(title, groups, framed = true) {
