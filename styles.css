@@ -560,33 +560,34 @@ input {
 .review-turn-list {
   display: grid;
   gap: 8px;
-  max-height: 190px;
-  overflow-y: auto;
-  scrollbar-width: none;
-}
-
-.review-turn-list::-webkit-scrollbar {
-  display: none;
 }
 
 .review-turn-card {
   display: grid;
   gap: 8px;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel);
 }
 
 .review-turn-pick {
-  display: grid;
-  grid-template-columns: auto 1fr;
+  display: flex;
   align-items: center;
-  gap: 10px;
+  justify-content: space-between;
+  gap: 12px;
   text-align: left;
+  padding: 0 12px;
 }
 
-.review-turn-pick span {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+.review-turn-badge {
+  color: var(--muted);
+  font-size: 0.82rem;
+  font-weight: 800;
+}
+
+.review-turn-pick.is-selected .review-turn-badge {
+  color: inherit;
 }
 
 .compact-field {
@@ -846,9 +847,21 @@ input {
   gap: 8px;
 }
 
+.archive-card-header {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: start;
+  gap: 10px;
+}
+
 .archive-card-roster {
   display: grid;
   gap: 6px;
+}
+
+.archive-card-copy {
+  display: grid;
+  gap: 4px;
 }
 
 .archive-card-label {
@@ -878,9 +891,6 @@ input {
 .archive-card span {
   min-width: 0;
   color: var(--muted);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 
 .archive-card strong,
@@ -929,6 +939,53 @@ input {
   color: var(--text);
   line-height: 1.3;
   overflow-wrap: anywhere;
+}
+
+.archive-card-text {
+  margin: 0;
+  color: var(--text);
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+
+.archive-feedback-input {
+  min-height: 76px;
+  padding: 12px 14px;
+  line-height: 1.35;
+}
+
+.auto-grow-textarea {
+  overflow: hidden;
+}
+
+.archive-takeaway-note {
+  min-height: 110px;
+}
+
+.result-chip {
+  min-height: 28px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 4px 10px;
+  border-radius: 999px;
+  background: var(--button);
+  color: var(--text);
+  font-size: 0.78rem;
+  font-weight: 900;
+  border: 1px solid var(--line);
+}
+
+.result-chip.is-win {
+  background: #12382f;
+  border-color: #37d8b5;
+  color: #eafff9;
+}
+
+.result-chip.is-loss {
+  background: #3a1719;
+  border-color: #ff756f;
+  color: #fff2f1;
 }
 
 .roster-block {
@@ -1029,6 +1086,40 @@ input {
 .settings-grid {
   display: grid;
   gap: 8px;
+}
+
+.battle-import-group {
+  gap: 8px;
+}
+
+.or-divider {
+  text-align: center;
+  color: var(--muted);
+  font-size: 0.82rem;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.replay-choice-list {
+  display: grid;
+  gap: 8px;
+}
+
+.replay-choice {
+  min-width: 0;
+  display: grid;
+  gap: 8px;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--button);
+  color: var(--text);
+  text-align: left;
+}
+
+.replay-choice strong {
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
 
 .file-input {
