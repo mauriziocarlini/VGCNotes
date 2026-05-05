@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>VGCNotes</title>
     <meta name="theme-color" content="#080a0d" />
-    <link rel="icon" href="./icons/icon.svg" type="image/svg+xml" />
+    <link rel="icon" href="./icons/favicon.png" type="image/png" />
     <link rel="apple-touch-icon" href="./icons/icon.png" />
     <link rel="manifest" href="./manifest.webmanifest" />
     <link rel="stylesheet" href="./styles.css" />
@@ -13,9 +13,11 @@
   <body>
     <main class="app-shell">
       <header class="topbar">
-        <div>
+        <div class="topbar-copy">
           <p class="kicker" id="stepKicker">Step 1 of 4</p>
-          <h1 id="stepTitle">Import team</h1>
+          <div class="title-row">
+            <h1 id="stepTitle">Import team</h1>
+          </div>
         </div>
         <div class="step-dots" aria-label="Progress">
           <span class="dot is-active"></span>
@@ -32,6 +34,7 @@
     </main>
 
     <script src="./pokemon-data.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/echarts@5/dist/echarts.min.js"></script>
     <script src="./app.js"></script>
   </body>
 </html>

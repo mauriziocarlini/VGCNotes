@@ -39,6 +39,7 @@ const state = {
   dashboardTeamFilter: "active",
   dashboardResultFilter: "all",
   replayImport: null,
+  replayImportChoice: "",
 };
 
 state.activeTeamId = readJson(STORAGE.activeTeamId, "") || state.teams[0]?.id || "";
@@ -50,6 +51,8 @@ const mainNav = document.querySelector("#mainNav");
 const stepKicker = document.querySelector("#stepKicker");
 const stepTitle = document.querySelector("#stepTitle");
 const stepDots = document.querySelector(".step-dots");
+let performanceChartInstance = null;
+let performanceChartResizeObserver = null;
 
 function readJson(key, fallback) {
   try {
@@ -89,6 +92,7 @@ function createDraft() {
     result: "",
     opponentTeam: Array(6).fill(""),
     opponentLead: [],
+    opponentLeadConfirmed: false,
     used: [],
     note: "",
     turns: [],
@@ -103,7 +107,9 @@ function emptyTurnDraft() {
   return {
     note: "",
     myEntries: [],
+    myEntriesConfirmed: false,
     opponentEntries: [],
+    opponentEntriesConfirmed: false,
     mySwitches: [],
     opponentSwitches: [],
     mySwitchPairs: [],
@@ -112,14 +118,19 @@ function emptyTurnDraft() {
     opponentKos: [],
     eventMode: "",
     mySwitchOut: "",
+    mySwitchIn: "",
     opponentSwitchOut: "",
+    opponentSwitchIn: "",
   };
 }
 
 function setPage(view) {
   state.view = view;
   state.archiveDetailId = "";
-  if (view !== "battle") state.replayImport = null;
+  if (!["battle", "archive"].includes(view)) {
+    state.replayImport = null;
+    state.replayImportChoice = "";
+  }
   actionBar.className = "action-bar";
   window.scrollTo({ top: 0, left: 0 });
 
@@ -153,14 +164,17 @@ function setStep(step) {
     state.draft = createDraft();
   }
 
-  if (state.step === 2 && state.draft && !state.draft.errorTurn) {
+  if (state.step === 3 && state.draft && !state.draft.errorTurn) {
     state.draft.errorTurn = String(state.draft.turns[0]?.number ?? 1);
   }
 
   render();
 }
 
-function render() {
+function render(options = {}) {
+  const preserveScroll = options.preserveScroll ?? false;
+  const scrollY = preserveScroll ? window.scrollY : null;
+  teardownPerformanceChart();
   screen.innerHTML = "";
   actionBar.innerHTML = "";
   actionBar.className = "action-bar";
@@ -170,11 +184,23 @@ function render() {
   renderMainNav();
 
   if (state.view === "dashboard") renderDashboard();
-  if (state.view === "battle" && state.step === 1) renderBattle();
-  if (state.view === "battle" && state.step === 2) renderReview();
+  if (state.view === "battle" && state.step === 1) renderBattleSetup();
+  if (state.view === "battle" && state.step === 2) renderBattleTurns();
+  if (state.view === "battle" && state.step === 3) renderReview();
   if (state.view === "teams") renderTeams();
   if (state.view === "archive") renderArchive();
   if (state.view === "settings") renderSettings();
+
+  if (scrollY !== null) {
+    requestAnimationFrame(() => window.scrollTo({ top: scrollY, left: 0 }));
+  }
+}
+
+function teardownPerformanceChart() {
+  performanceChartResizeObserver?.disconnect();
+  performanceChartResizeObserver = null;
+  performanceChartInstance?.dispose();
+  performanceChartInstance = null;
 }
 
 function renderTopbar() {
@@ -186,29 +212,39 @@ function renderTopbar() {
   };
 
   const back = getBackConfig();
-  const titleWrap = stepTitle.parentElement;
-  titleWrap.querySelector(".top-back")?.remove();
+  const titleWrap = stepTitle.parentElement?.parentElement;
+  const titleRow = titleWrap?.querySelector(".title-row");
+  titleRow?.querySelector(".top-back")?.remove();
   document.querySelector(".top-action")?.remove();
-  if (back) {
-    const button = el("button", "top-back", back.label);
+  if (back && titleRow) {
+    const button = el("button", "top-back", "←");
     button.type = "button";
+    button.title = back.label;
+    button.setAttribute("aria-label", back.label);
     button.addEventListener("click", back.action);
-    titleWrap.prepend(button);
+    titleRow.prepend(button);
   }
 
   if (state.view === "battle") {
     stepKicker.textContent = "";
     stepKicker.hidden = true;
-    stepTitle.textContent = state.step === 1 ? "New battle" : "Review";
+    const stepTitles = {
+      1: "New battle",
+      2: "Turns",
+      3: "Review",
+    };
+    stepTitle.textContent = stepTitles[state.step] ?? "Battle";
     stepDots.hidden = false;
     document.querySelectorAll(".dot").forEach((dot, index) => {
-      dot.hidden = index > 1;
+      dot.hidden = index > 2;
       dot.classList.toggle("is-active", index === state.step - 1);
     });
     return;
   }
 
-  const title = pageTitles[state.view];
+  let title = pageTitles[state.view];
+  if (state.view === "teams" && state.teamImportOpen) title = "Add team";
+  if (state.view === "archive" && state.archiveDetailId) title = "Battle log";
   stepKicker.textContent = "";
   stepKicker.hidden = true;
   stepTitle.textContent = title;
@@ -238,8 +274,15 @@ function getBackConfig() {
 
   if (state.view === "battle" && state.step === 2) {
     return {
-      label: "Back to Battle",
+      label: "Back to Setup",
       action: () => setStep(1),
+    };
+  }
+
+  if (state.view === "battle" && state.step === 3) {
+    return {
+      label: "Back to Turns",
+      action: () => setStep(2),
     };
   }
 
@@ -307,20 +350,13 @@ function renderImport() {
   namesGroup.append(el("div", "group-title", "Team"));
 
   const datalistId = "teamPokemonSuggestions";
-  const datalist = el("datalist");
-  datalist.id = datalistId;
-  POKEMON_NAMES.forEach((name) => {
-    const option = el("option");
-    option.value = name;
-    datalist.append(option);
-  });
+  ensureDatalist(datalistId, POKEMON_NAMES);
 
   const grid = el("div", "opponent-grid");
   currentNames.forEach((name, index) => {
     const input = el("input", "mini-input opponent-input");
-    input.setAttribute("list", datalistId);
     input.value = name;
-    enableNativeSuggest(input);
+    enableNativeSuggest(input, datalistId, () => POKEMON_NAMES);
     input.addEventListener("input", () => {
       currentNames[index] = input.value.slice(0, 40);
       state.parsedTeam = [...currentNames];
@@ -334,7 +370,7 @@ function renderImport() {
     });
     grid.append(input);
   });
-  namesGroup.append(datalist, grid);
+  namesGroup.append(grid);
 
   const saveButton = el("button", "primary", "Save team");
   saveButton.type = "button";
@@ -386,59 +422,16 @@ function renderImportNames(list) {
   });
 }
 
-function renderBattle() {
+function renderBattleSetup() {
   const draft = state.draft;
   ensureDraftShape(draft);
   const team = activeTeamNames();
-  const turnEntryStatus = getTurnEntryStatus(draft, battleTeamNames(draft));
   const hasFullOpponentTeam = opponentTeamReady(draft);
-  const replayImportGroup = renderBattleReplayImport();
-
-  const opponentGroup = renderOpponentTeam(draft);
-  opponentGroup.classList.add("battle-section");
-
-  const usedGroup = el("div", "group");
-  usedGroup.classList.add("battle-section");
-  const usedHeader = el("div", "group-header");
-  usedHeader.append(el("div", "group-title", `Lead / back ${draft.used.length}/4`));
-  const clearUsed = el("button", "tiny-button", "Clear");
-  clearUsed.type = "button";
-  clearUsed.disabled = draft.used.length === 0;
-  clearUsed.addEventListener("click", () => {
-    draft.used = [];
-    render();
-  });
-  usedHeader.append(clearUsed);
-  const teamGrid = el("div", "team-grid");
-  team.forEach((name) => {
-    const pick = el("button", "team-pick", name);
-    const pickIndex = draft.used.indexOf(name);
-    pick.type = "button";
-    pick.textContent = "";
-    pick.classList.toggle("is-selected", pickIndex !== -1);
-    pick.classList.toggle("is-lead", pickIndex === 0 || pickIndex === 1);
-    pick.classList.toggle("is-back", pickIndex === 2 || pickIndex === 3);
-    pick.append(el("span", "pick-name", name));
-    if (pickIndex !== -1) {
-      pick.append(el("span", "pick-number", String(pickIndex + 1)));
-    }
-    pick.addEventListener("click", () => {
-      if (draft.used.includes(name)) {
-        draft.used = draft.used.filter((item) => item !== name);
-      } else if (draft.used.length < 4) {
-        draft.used.push(name);
-      }
-      render();
-    });
-    teamGrid.append(pick);
-  });
-  usedGroup.append(usedHeader, teamGrid);
+  const teamsCompare = renderBattleTeamsCompare(draft, team);
 
   const noteField = el("div", "field");
-  noteField.classList.add("battle-section");
-  const noteLabel = el("label", "", "Battle Snapshot");
+  const noteLabel = el("label", "section-label", "Game Plan");
   noteLabel.htmlFor = "battleNote";
-  const noteHelp = el("p", "helper-text", "Just write plan, target, and key moment.");
   const note = el("textarea", "snapshot-note");
   note.id = "battleNote";
   note.rows = 4;
@@ -447,68 +440,156 @@ function renderBattle() {
     draft.note = note.value;
     note.value = draft.note;
   });
-  noteField.append(noteLabel, noteHelp, note);
+  noteField.append(noteLabel, note);
 
-  const turnGroup = el("div", "group");
-  turnGroup.classList.add("battle-section");
-  turnGroup.append(
-    el("div", "group-title", "Key Turns"),
-    el("p", "helper-text", "Don’t log everything. Only the turns you want to understand better later.")
-  );
-  const editingTurn = draft.turns.find((turn) => turn.number === draft.editingTurnNumber);
-  const controls = el("div", "turn-controls");
-  const composeCard = el("div", "turn-compose-card");
-  const composeTitle = el("div", "group-title", editingTurn ? `Turn ${editingTurn.number}` : `Turn ${draft.turns.length + 1}`);
-  const saveTurn = el(
-    "button",
-    editingTurn ? "secondary save-turn-button" : "icon-button save-turn-button",
-    editingTurn ? "Save turn" : `Add turn (${draft.turns.length + 1})`
-  );
-  saveTurn.type = "button";
-  saveTurn.disabled = editingTurn
-    ? turnEntryStatus.mustResolveEntries || !hasFullOpponentTeam
-    : draft.used.length !== 4 || !hasFullOpponentTeam || turnEntryStatus.mustResolveEntries;
-  const turnInput = el("textarea", "turn-note-input");
-  turnInput.rows = 1;
-  turnInput.value = draft.turnDraft.note;
-  turnInput.addEventListener("input", () => {
-    draft.turnDraft.note = turnInput.value;
+  const startButton = el("button", "primary", "Start battle");
+  startButton.type = "button";
+  startButton.disabled = draft.used.length !== 4 || !hasFullOpponentTeam;
+  startButton.addEventListener("click", () => setStep(2));
+
+  [teamsCompare, noteField].filter(Boolean).forEach((node) => screen.append(node));
+  actionBar.append(startButton);
+}
+
+function renderBattleTeamsCompare(draft, team) {
+  const wrap = el("div", "picks-compare-grid");
+
+  const myCard = el("div", "dash-block picks-compare-card");
+  myCard.append(el("div", "dash-label", "My Team"));
+  const myList = el("div", "picks-compare-list is-interactive");
+  team.forEach((name) => {
+    const pick = el("button", "team-pick picks-compare-pick", name);
+    const pickIndex = draft.used.indexOf(name);
+    pick.type = "button";
+    pick.textContent = "";
+    pick.classList.toggle("is-selected", pickIndex !== -1);
+    pick.classList.toggle("is-lead", pickIndex === 0 || pickIndex === 1);
+    pick.classList.toggle("is-back", pickIndex === 2 || pickIndex === 3);
+    pick.append(el("span", "pick-name", name));
+    if (pickIndex !== -1) pick.append(el("span", "pick-number", String(pickIndex + 1)));
+    pick.addEventListener("click", () => {
+      if (draft.used.includes(name)) {
+        draft.used = draft.used.filter((item) => item !== name);
+      } else if (draft.used.length < 4) {
+        draft.used.push(name);
+      }
+      render();
+    });
+    myList.append(pick);
   });
-  const switchControls = renderSwitchControls(draft, battleTeamNames(draft));
-  saveTurn.addEventListener("click", () => {
-    const text = draft.turnDraft.note.trim();
-    if (editingTurn) {
-      editingTurn.note = text;
-      editingTurn.myEntries = [...draft.turnDraft.myEntries];
-      editingTurn.opponentEntries = [...draft.turnDraft.opponentEntries];
-      editingTurn.mySwitches = [...draft.turnDraft.mySwitches];
-      editingTurn.opponentSwitches = [...draft.turnDraft.opponentSwitches];
-      editingTurn.mySwitchPairs = [...draft.turnDraft.mySwitchPairs];
-      editingTurn.opponentSwitchPairs = [...draft.turnDraft.opponentSwitchPairs];
-      editingTurn.myKos = [...draft.turnDraft.myKos];
-      editingTurn.opponentKos = [...draft.turnDraft.opponentKos];
-      draft.editingTurnNumber = null;
-      draft.turnDraft = emptyTurnDraft();
-    } else {
-      draft.turns.push({
-        number: draft.turns.length + 1,
-        note: text,
-        feedback: "",
-        myEntries: [...draft.turnDraft.myEntries],
-        opponentEntries: [...draft.turnDraft.opponentEntries],
-        mySwitches: [...draft.turnDraft.mySwitches],
-        opponentSwitches: [...draft.turnDraft.opponentSwitches],
-        mySwitchPairs: [...draft.turnDraft.mySwitchPairs],
-        opponentSwitchPairs: [...draft.turnDraft.opponentSwitchPairs],
-        myKos: [...draft.turnDraft.myKos],
-        opponentKos: [...draft.turnDraft.opponentKos],
+  myCard.append(myList);
+
+  const opponentCard = renderOpponentTeam(draft);
+
+  wrap.append(myCard, opponentCard);
+  return wrap;
+}
+
+function renderBattleTurns() {
+  const draft = state.draft;
+  ensureDraftShape(draft);
+  const hasFullOpponentTeam = opponentTeamReady(draft);
+  const needsOpponentLeadConfirmation = draft.turns.length === 0 && !draft.opponentLeadConfirmed;
+  const opponentNames = filledOpponentTeam(draft);
+  if (needsOpponentLeadConfirmation) {
+    const leadCard = el("div", "turn-compose-card");
+    leadCard.append(
+      el("div", "group-title", "Turn 1 lead"),
+      el("p", "helper-text", "Pick their two leads, then confirm before you start logging turn 1.")
+    );
+    const leadChips = el("div", "team-grid lead-pick-grid");
+    opponentNames.forEach((name) => {
+      const chip = el("button", "team-pick picks-compare-pick", "");
+      chip.type = "button";
+      chip.classList.toggle("is-selected", draft.opponentLead.includes(name));
+      chip.classList.toggle("is-lead", draft.opponentLead.includes(name));
+      chip.append(el("span", "pick-name", name));
+      chip.addEventListener("click", () => {
+        draft.opponentLead = toggleLimited(draft.opponentLead, name, 2);
+        draft.opponentLeadConfirmed = false;
+        render({ preserveScroll: true });
       });
-      draft.turnDraft = emptyTurnDraft();
-    }
-    render();
-  });
-  composeCard.append(composeTitle, turnInput, switchControls, saveTurn);
-  controls.append(composeCard);
+      leadChips.append(chip);
+    });
+    const confirmLead = el("button", "primary", "Confirm lead");
+    confirmLead.type = "button";
+    confirmLead.disabled = !hasFullOpponentTeam || draft.opponentLead.length !== 2;
+    confirmLead.addEventListener("click", () => {
+      if (draft.opponentLead.length !== 2) return;
+      draft.opponentLeadConfirmed = true;
+      render({ preserveScroll: true });
+    });
+    leadCard.append(leadChips, confirmLead);
+    screen.append(leadCard);
+    return;
+  }
+
+  const turnEntryStatus = getTurnEntryStatus(draft, battleTeamNames(draft));
+  const editingTurn = draft.turns.find((turn) => turn.number === draft.editingTurnNumber);
+  const nextTurnState = getNextTurnState(draft, battleTeamNames(draft));
+  const canComposeNextTurn = Boolean(editingTurn) || !nextTurnState.battleOver;
+  const controls = el("div", "turn-controls");
+  if (canComposeNextTurn) {
+    const composeCard = el("div", "turn-compose-card");
+    const composeTitle = el("div", "group-title", editingTurn ? `Turn ${editingTurn.number}` : `Turn ${draft.turns.length + 1}`);
+    const saveTurn = el(
+      "button",
+      editingTurn ? "secondary save-turn-button" : "icon-button save-turn-button",
+      editingTurn ? "Save turn" : "End turn"
+    );
+    saveTurn.type = "button";
+    saveTurn.disabled = editingTurn
+      ? turnEntryStatus.mustResolveEntries || !hasFullOpponentTeam
+      : draft.used.length !== 4 || !hasFullOpponentTeam || turnEntryStatus.mustResolveEntries;
+    const turnNoteField = el("div", "turn-note-field");
+    const turnLabel = el("label", "", "Notes");
+    turnLabel.htmlFor = "battleTurnNote";
+    const turnInput = el("textarea", "turn-note-input");
+    turnInput.id = "battleTurnNote";
+    turnInput.rows = 1;
+    turnInput.value = draft.turnDraft.note;
+    turnInput.addEventListener("input", () => {
+      draft.turnDraft.note = turnInput.value;
+    });
+    turnNoteField.append(turnLabel, turnInput);
+    const switchControls = renderSwitchControls(draft, battleTeamNames(draft));
+    saveTurn.addEventListener("click", () => {
+      const text = draft.turnDraft.note.trim();
+      if (editingTurn) {
+        editingTurn.note = text;
+        editingTurn.noteSource = editingTurn.noteSource ?? "manual";
+        editingTurn.myEntries = [...draft.turnDraft.myEntries];
+        editingTurn.opponentEntries = [...draft.turnDraft.opponentEntries];
+        editingTurn.mySwitches = [...draft.turnDraft.mySwitches];
+        editingTurn.opponentSwitches = [...draft.turnDraft.opponentSwitches];
+        editingTurn.mySwitchPairs = [...draft.turnDraft.mySwitchPairs];
+        editingTurn.opponentSwitchPairs = [...draft.turnDraft.opponentSwitchPairs];
+        editingTurn.myKos = [...draft.turnDraft.myKos];
+        editingTurn.opponentKos = [...draft.turnDraft.opponentKos];
+        draft.editingTurnNumber = null;
+        draft.turnDraft = emptyTurnDraft();
+      } else {
+        draft.turns.push({
+          number: draft.turns.length + 1,
+          note: text,
+          noteSource: "manual",
+          feedback: "",
+          myEntries: [...draft.turnDraft.myEntries],
+          opponentEntries: [...draft.turnDraft.opponentEntries],
+          mySwitches: [...draft.turnDraft.mySwitches],
+          opponentSwitches: [...draft.turnDraft.opponentSwitches],
+          mySwitchPairs: [...draft.turnDraft.mySwitchPairs],
+          opponentSwitchPairs: [...draft.turnDraft.opponentSwitchPairs],
+          myKos: [...draft.turnDraft.myKos],
+          opponentKos: [...draft.turnDraft.opponentKos],
+        });
+        draft.turnDraft = emptyTurnDraft();
+      }
+      render({ preserveScroll: true });
+    });
+    composeCard.append(composeTitle, turnNoteField, switchControls, saveTurn);
+    controls.append(composeCard);
+  }
   const turnList = el("ul", "turn-list");
   draft.turns.slice(-4).forEach((turn) => {
     const row = renderBattleTurnRow(draft, turn);
@@ -519,8 +600,11 @@ function renderBattle() {
       draft.editingTurnNumber = turn.number;
       draft.turnDraft = {
         note: turn.note ?? "",
+        noteSource: turn.noteSource ?? inferTurnNoteSource(turn),
         myEntries: [...(turn.myEntries ?? [])],
+        myEntriesConfirmed: Boolean((turn.myEntries ?? []).length),
         opponentEntries: [...(turn.opponentEntries ?? [])],
+        opponentEntriesConfirmed: Boolean((turn.opponentEntries ?? []).length),
         mySwitches: [...(turn.mySwitches ?? [])],
         opponentSwitches: [...(turn.opponentSwitches ?? [])],
         mySwitchPairs: [...(turn.mySwitchPairs ?? [])],
@@ -529,9 +613,11 @@ function renderBattle() {
         opponentKos: [...(turn.opponentKos ?? [])],
         eventMode: "",
         mySwitchOut: "",
+        mySwitchIn: "",
         opponentSwitchOut: "",
+        opponentSwitchIn: "",
       };
-      render();
+      render({ preserveScroll: true });
     });
     actions.append(edit);
 
@@ -542,7 +628,7 @@ function renderBattle() {
         draft.turns.pop();
         draft.editingTurnNumber = null;
         draft.turnDraft = emptyTurnDraft();
-        render();
+        render({ preserveScroll: true });
       });
       actions.append(remove);
     }
@@ -551,78 +637,64 @@ function renderBattle() {
 
     turnList.append(row);
   });
-  if (!draft.turns.length) {
-    turnList.append(el("li", "empty", "Log only the important, strange, or decisive turns."));
-  }
-  turnGroup.append(controls, turnList);
 
   const reviewButton = el("button", "primary", "Save and review");
   reviewButton.type = "button";
   reviewButton.disabled = draft.used.length !== 4 || !hasFullOpponentTeam || draft.turns.length === 0;
-  reviewButton.addEventListener("click", () => setStep(2));
+  reviewButton.addEventListener("click", () => setStep(3));
 
-  screen.append(replayImportGroup, usedGroup, opponentGroup, noteField, turnGroup);
+  screen.append(controls, turnList);
   actionBar.append(reviewButton);
-}
-
-function renderBattleReplayImport() {
-  const group = el("div", "group battle-import-group");
-  group.append(el("div", "group-title", "Import Replay"));
-
-  const replayInput = el("input", "file-input");
-  replayInput.type = "file";
-  replayInput.accept = "text/html,.html";
-  replayInput.addEventListener("change", () => {
-    const file = replayInput.files?.[0];
-    if (file) handleBattleReplayFile(file);
-    replayInput.value = "";
-  });
-
-  const importButton = el("button", "secondary", "Import replay HTML");
-  importButton.type = "button";
-  importButton.addEventListener("click", () => replayInput.click());
-
-  group.append(importButton, replayInput);
-
-  if (state.replayImport) {
-    const prompt = el("div", "dash-block");
-    prompt.append(el("div", "dash-label", "Which side are you?"));
-    const options = el("div", "replay-choice-list");
-    ["p1", "p2"].forEach((side) => options.append(replayChoiceButton(state.replayImport, side)));
-    const cancel = el("button", "tiny-button", "Cancel");
-    cancel.type = "button";
-    cancel.addEventListener("click", () => {
-      state.replayImport = null;
-      render();
-    });
-    prompt.append(options, cancel);
-    group.append(prompt);
-  }
-
-  group.append(el("div", "or-divider", "or"));
-  return group;
 }
 
 function replayChoiceButton(replayImport, sideKey) {
   const side = replayImport.sides[sideKey];
-  const option = el("button", "replay-choice");
+  const option = el("button", "archive-card replay-choice");
   option.type = "button";
-  option.append(
-    el("strong", "", side.playerName || sideKey.toUpperCase()),
-    teamNames(side.team)
+  option.classList.toggle("is-selected", state.replayImportChoice === sideKey);
+  const header = el("div", "archive-card-header");
+  header.append(
+    el("strong", "", side.playerName || sideKey),
+    el("span", "result-chip", sideKey)
   );
-  option.addEventListener("click", () => finalizeReplayImport(sideKey));
+  option.append(header, renderReplayChoiceTeam(side.team));
+  option.addEventListener("click", () => {
+    state.replayImportChoice = state.replayImportChoice === sideKey ? "" : sideKey;
+    render();
+  });
   return option;
+}
+
+function renderReplayChoiceTeam(names) {
+  const list = el("div", "picks-compare-list");
+  (names ?? []).filter(Boolean).forEach((name) => {
+    list.append(el("span", "roster-chip picks-compare-chip", name));
+  });
+  return list;
+}
+
+function replayCancelButton() {
+  const cancel = el("button", "result-chip replay-cancel-chip", "Cancel");
+  cancel.type = "button";
+  cancel.addEventListener("click", () => {
+    state.replayImport = null;
+    state.replayImportChoice = "";
+    render();
+  });
+  return cancel;
 }
 
 function ensureDraftShape(draft) {
   draft.opponentTeam ??= Array(6).fill("");
   while (draft.opponentTeam.length < 6) draft.opponentTeam.push("");
   draft.opponentLead ??= [];
+  draft.opponentLeadConfirmed ??= false;
   draft.turnDraft ??= emptyTurnDraft();
   draft.turnDraft.note ??= "";
   draft.turnDraft.myEntries ??= [];
+  draft.turnDraft.myEntriesConfirmed ??= false;
   draft.turnDraft.opponentEntries ??= [];
+  draft.turnDraft.opponentEntriesConfirmed ??= false;
   draft.turnDraft.mySwitches ??= [];
   draft.turnDraft.opponentSwitches ??= [];
   draft.turnDraft.mySwitchPairs ??= [];
@@ -631,9 +703,12 @@ function ensureDraftShape(draft) {
   draft.turnDraft.opponentKos ??= [];
   draft.turnDraft.eventMode ??= "";
   draft.turnDraft.mySwitchOut ??= "";
+  draft.turnDraft.mySwitchIn ??= "";
   draft.turnDraft.opponentSwitchOut ??= "";
+  draft.turnDraft.opponentSwitchIn ??= "";
   draft.turns.forEach((turn) => {
     turn.feedback ??= "";
+    turn.noteSource ??= inferTurnNoteSource(turn);
     turn.myEntries ??= [];
     turn.opponentEntries ??= [];
     turn.mySwitches ??= [];
@@ -655,6 +730,7 @@ function ensureDraftShape(draft) {
     replacementChoices(opponentNames, board.opponentActive, board.opponentFainted, draft.turnDraft.opponentEntries)
   );
   draft.opponentLead = draft.opponentLead.filter((name) => opponentNames.includes(name));
+  if (draft.opponentLead.length !== 2) draft.opponentLeadConfirmed = false;
   draft.turnDraft.myEntries = draft.turnDraft.myEntries.filter((name) => myEntryChoices.includes(name));
   draft.turnDraft.opponentEntries = draft.turnDraft.opponentEntries.filter((name) => opponentEntryChoices.includes(name));
   draft.turnDraft.mySwitches = draft.turnDraft.mySwitches.filter((name) => myBattleTeam.includes(name));
@@ -679,106 +755,172 @@ function ensureDraftShape(draft) {
 }
 
 function renderOpponentTeam(draft) {
-  const group = el("div", "group");
-  group.append(el("div", "group-title", "Opponent Team"));
+  const card = el("div", "dash-block picks-compare-card");
+  card.append(el("div", "dash-label", "Opponent Team"));
 
   const datalistId = "pokemonSuggestions";
-  const datalist = el("datalist");
-  datalist.id = datalistId;
-  pokemonSuggestions(draft).forEach((name) => {
-    const option = el("option");
-    option.value = name;
-    datalist.append(option);
-  });
+  ensureDatalist(datalistId, pokemonSuggestions(draft));
 
-  const grid = el("div", "opponent-grid");
+  const grid = el("div", "picks-compare-list picks-compare-input-list");
   draft.opponentTeam.slice(0, 6).forEach((name, index) => {
-    const input = el("input", "mini-input opponent-input");
-    input.setAttribute("list", datalistId);
+    const input = el("input", "mini-input opponent-input picks-compare-input");
     input.value = name;
-    enableNativeSuggest(input);
+    enableNativeSuggest(input, datalistId, () => pokemonSuggestions(draft));
     input.addEventListener("input", () => {
       draft.opponentTeam[index] = input.value.slice(0, 32);
       draft.opponentLead = draft.opponentLead.filter((lead) => filledOpponentTeam(draft).includes(lead));
+      draft.opponentLeadConfirmed = false;
     });
     input.addEventListener("blur", () => {
       draft.opponentTeam[index] = input.value.trim();
       input.value = draft.opponentTeam[index];
-        draft.opponentLead = draft.opponentLead.filter((lead) => filledOpponentTeam(draft).includes(lead));
+      draft.opponentLead = draft.opponentLead.filter((lead) => filledOpponentTeam(draft).includes(lead));
+      draft.opponentLeadConfirmed = false;
       render();
     });
     grid.append(input);
   });
-  group.append(datalist, grid);
+  card.append(grid);
 
-  const opponentNames = filledOpponentTeam(draft);
-  if (opponentNames.length) {
-    const leadGroup = el("div", "mini-chip-group");
-    leadGroup.append(el("div", "mini-label", "Turn 1 lead"));
-    const leadChips = el("div", "chip-grid compact-chips");
-    opponentNames.forEach((name) => {
-      const chip = el("button", "chip", name);
-      chip.type = "button";
-      chip.classList.toggle("is-selected", draft.opponentLead.includes(name));
-      chip.addEventListener("click", () => {
-        draft.opponentLead = toggleLimited(draft.opponentLead, name, 2);
-        render();
-      });
-      leadChips.append(chip);
-    });
-    leadGroup.append(leadChips);
-    group.append(leadGroup);
+  return card;
+}
+
+function ensureDatalist(id, names) {
+  let datalist = document.getElementById(id);
+  if (!datalist) {
+    datalist = el("datalist");
+    datalist.id = id;
+    datalist.hidden = true;
+    document.body.append(datalist);
   }
-
-  return group;
+  datalist.innerHTML = "";
+  names.forEach((name) => {
+    const option = el("option");
+    option.value = name;
+    datalist.append(option);
+  });
+  return datalist;
 }
 
 function renderSwitchControls(draft, team) {
   const wrap = el("div", "switch-controls");
   const turnNumber = draft.editingTurnNumber ?? draft.turns.length + 1;
   const baseBoard = boardBeforeTurn(draft, turnNumber);
-  const entryStatus = getTurnEntryStatus(draft, team, baseBoard);
-  const { myMissing, opponentMissing, myEntryChoices, opponentEntryChoices, needsMyEntry, needsOpponentEntry, mustResolveEntries } = entryStatus;
-  const boardAfterEntries = previewBoard(baseBoard, draft.turnDraft, {
+  let entryStatus = getTurnEntryStatus(draft, team, baseBoard);
+  let {
+    myMissing,
+    opponentMissing,
+    myRequiredEntries,
+    opponentRequiredEntries,
+    myEntryChoices,
+    opponentEntryChoices,
+    needsMyEntry,
+    needsOpponentEntry,
+    mustResolveEntries,
+  } = entryStatus;
+
+  let preselectedSingleEntry = false;
+  if (myRequiredEntries === 1 && myEntryChoices.length === 1 && draft.turnDraft.myEntries.length === 0) {
+    draft.turnDraft.myEntries = [myEntryChoices[0]];
+    draft.turnDraft.myEntriesConfirmed = false;
+    preselectedSingleEntry = true;
+  }
+  if (opponentRequiredEntries === 1 && opponentEntryChoices.length === 1 && draft.turnDraft.opponentEntries.length === 0) {
+    draft.turnDraft.opponentEntries = [opponentEntryChoices[0]];
+    draft.turnDraft.opponentEntriesConfirmed = false;
+    preselectedSingleEntry = true;
+  }
+  if (preselectedSingleEntry) {
+    entryStatus = getTurnEntryStatus(draft, team, baseBoard);
+    ({
+      myMissing,
+      opponentMissing,
+      myRequiredEntries,
+      opponentRequiredEntries,
+      myEntryChoices,
+      opponentEntryChoices,
+      needsMyEntry,
+      needsOpponentEntry,
+      mustResolveEntries,
+    } = entryStatus);
+  }
+
+  const confirmedTurnDraft = withConfirmedEntriesOnly(draft.turnDraft);
+
+  const boardAfterEntries = previewBoard(baseBoard, confirmedTurnDraft, {
     includeSwitches: false,
     includeKos: false,
   });
-  const boardAfterSwitches = previewBoard(baseBoard, draft.turnDraft, { includeKos: false });
-  const boardNow = previewBoard(baseBoard, draft.turnDraft);
+  const boardAfterSwitches = previewBoard(baseBoard, confirmedTurnDraft, { includeKos: false });
+  const boardNow = previewBoard(baseBoard, confirmedTurnDraft);
   wrap.append(boardPanel("Active", boardNow.myActive, boardNow.opponentActive));
 
   if (mustResolveEntries) {
-    const entryPanel = el("div", "event-panel");
-    entryPanel.append(el("div", "mini-label", "Entries after KO"));
+    const entryPanel = el("div", "event-panel is-required");
+    entryPanel.append(el("div", "event-panel-title", "Entries after KO"));
     if (needsMyEntry) {
       entryPanel.append(
         switchGroup(
           "Who comes in for me?",
-          mergeChoices(draft.turnDraft.myEntries, myEntryChoices),
+          myEntryChoices,
           draft.turnDraft.myEntries,
           (next) => {
-            draft.turnDraft.myEntries = limitSelection(next, myMissing);
-            render();
+            draft.turnDraft.myEntries = limitSelection(next, myRequiredEntries);
+          draft.turnDraft.myEntriesConfirmed = false;
+            render({ preserveScroll: true });
           },
           "No available Pokemon on my side",
-          myMissing
+          myRequiredEntries,
+          "in",
+          "my"
         )
       );
+      const confirmMine = el("button", "secondary add-switch-button", "Confirm entry");
+      confirmMine.type = "button";
+      confirmMine.disabled =
+        draft.turnDraft.myEntries.length < myRequiredEntries &&
+        !(myRequiredEntries === 1 && myEntryChoices.length === 1);
+      confirmMine.addEventListener("click", () => {
+        if (!draft.turnDraft.myEntries.length && myRequiredEntries === 1 && myEntryChoices.length === 1) {
+          draft.turnDraft.myEntries = [myEntryChoices[0]];
+        }
+        if (draft.turnDraft.myEntries.length < myRequiredEntries) return;
+        draft.turnDraft.myEntriesConfirmed = true;
+        render({ preserveScroll: true });
+      });
+      entryPanel.append(confirmMine);
     }
     if (needsOpponentEntry) {
       entryPanel.append(
         switchGroup(
           "Who comes in for them?",
-          mergeChoices(draft.turnDraft.opponentEntries, opponentEntryChoices),
+          opponentEntryChoices,
           draft.turnDraft.opponentEntries,
           (next) => {
-            draft.turnDraft.opponentEntries = limitSelection(next, opponentMissing);
-            render();
+            draft.turnDraft.opponentEntries = limitSelection(next, opponentRequiredEntries);
+          draft.turnDraft.opponentEntriesConfirmed = false;
+            render({ preserveScroll: true });
           },
           "No available Pokemon on their side",
-          opponentMissing
+          opponentRequiredEntries,
+          "in",
+          "opponent"
         )
       );
+      const confirmTheirs = el("button", "secondary add-switch-button", "Confirm entry");
+      confirmTheirs.type = "button";
+      confirmTheirs.disabled =
+        draft.turnDraft.opponentEntries.length < opponentRequiredEntries &&
+        !(opponentRequiredEntries === 1 && opponentEntryChoices.length === 1);
+      confirmTheirs.addEventListener("click", () => {
+        if (!draft.turnDraft.opponentEntries.length && opponentRequiredEntries === 1 && opponentEntryChoices.length === 1) {
+          draft.turnDraft.opponentEntries = [opponentEntryChoices[0]];
+        }
+        if (draft.turnDraft.opponentEntries.length < opponentRequiredEntries) return;
+        draft.turnDraft.opponentEntriesConfirmed = true;
+        render({ preserveScroll: true });
+      });
+      entryPanel.append(confirmTheirs);
     }
     wrap.append(entryPanel);
   }
@@ -786,16 +928,16 @@ function renderSwitchControls(draft, team) {
   const eventBar = el("div", "event-bar");
   [
     ["my-switch", "My switch"],
-    ["opp-switch", "Opp switch"],
+    ["opp-switch", "Opponent switch"],
     ["ko", "KO"],
   ].forEach(([mode, label]) => {
-    const button = el("button", "event-button", label);
+    const button = el("button", `event-button ${mode}`, label);
     button.type = "button";
     button.disabled = mustResolveEntries;
     button.classList.toggle("is-selected", draft.turnDraft.eventMode === mode);
     button.addEventListener("click", () => {
       draft.turnDraft.eventMode = draft.turnDraft.eventMode === mode ? "" : mode;
-      render();
+      render({ preserveScroll: true });
     });
     eventBar.append(button);
   });
@@ -830,61 +972,98 @@ function renderSwitchControls(draft, team) {
   }
   if (draft.turnDraft.eventMode === "ko") {
     const koPanel = el("div", "event-panel");
+    koPanel.append(el("div", "event-panel-title", "KO"));
     koPanel.append(
       switchGroup("My active", boardAfterSwitches.myActive, draft.turnDraft.myKos, (next) => {
         draft.turnDraft.myKos = next;
-        render();
-      }),
-      switchGroup("Opp active", boardAfterSwitches.opponentActive, draft.turnDraft.opponentKos, (next) => {
+        render({ preserveScroll: true });
+      }, "No options right now", 2, "ko", "my"),
+      switchGroup("Opponent active", boardAfterSwitches.opponentActive, draft.turnDraft.opponentKos, (next) => {
         draft.turnDraft.opponentKos = next;
-        render();
-      })
+        render({ preserveScroll: true });
+      }, "No options right now", 2, "ko", "opponent")
     );
     wrap.append(koPanel);
   }
 
-  const summary = turnSummary({ ...draft.turnDraft, number: turnNumber });
-  if (summary !== "No note") wrap.append(el("div", "event-summary", summary));
   return wrap;
 }
 
 function switchPairPanel(title, active, bench, turnDraft, side) {
   const panel = el("div", "event-panel");
   const outKey = side === "my" ? "mySwitchOut" : "opponentSwitchOut";
+  const inKey = side === "my" ? "mySwitchIn" : "opponentSwitchIn";
   const pairsKey = side === "my" ? "mySwitchPairs" : "opponentSwitchPairs";
   const insKey = side === "my" ? "mySwitches" : "opponentSwitches";
+  const tone = side === "my" ? "my" : "opponent";
+  const maxPairs = side === "opponent" ? 2 : 2;
+  const hasRemainingPairSlots = turnDraft[pairsKey].length < maxPairs;
+  const canOfferSwitch = hasRemainingPairSlots && active.length > 0;
 
-  panel.append(el("div", "mini-label", title));
-  panel.append(
-    switchGroup("Out", active, turnDraft[outKey] ? [turnDraft[outKey]] : [], (next) => {
-      turnDraft[outKey] = next.at(-1) ?? "";
-      render();
-    })
-  );
+  if (!hasRemainingPairSlots) {
+    turnDraft[outKey] = "";
+    turnDraft[inKey] = "";
+  }
 
-  if (turnDraft[outKey]) {
+  panel.append(el("div", "event-panel-title", title));
+  if (canOfferSwitch) {
     panel.append(
-      switchGroup("In", bench, [], (next) => {
-        const incoming = next.at(-1);
-        if (!incoming) return;
-        turnDraft[pairsKey] = upsertSwitchPair(turnDraft[pairsKey], { out: turnDraft[outKey], in: incoming });
+      switchGroup("Out", active, turnDraft[outKey] ? [turnDraft[outKey]] : [], (next) => {
+        turnDraft[outKey] = next.at(-1) ?? "";
+        if (turnDraft[outKey] === "" || turnDraft[outKey] === turnDraft[inKey]) {
+          turnDraft[inKey] = "";
+        }
+        render({ preserveScroll: true });
+      }, "No options right now", 1, "out", tone)
+    );
+  } else {
+    panel.append(el("div", "mini-empty", "No options right now"));
+  }
+
+  if (hasRemainingPairSlots && bench.length) {
+    panel.append(
+      switchGroup("In", bench, turnDraft[inKey] ? [turnDraft[inKey]] : [], (next) => {
+        turnDraft[inKey] = next.at(-1) ?? "";
+        render({ preserveScroll: true });
+      }, "No options right now", 1, "in", tone)
+    );
+
+    if (turnDraft[outKey] && turnDraft[inKey]) {
+      const addPair = el("button", "secondary add-switch-button", "Add switch");
+      addPair.type = "button";
+      addPair.addEventListener("click", () => {
+        if (!turnDraft[outKey] || !turnDraft[inKey]) return;
+        turnDraft[pairsKey] = upsertSwitchPair(turnDraft[pairsKey], { out: turnDraft[outKey], in: turnDraft[inKey] });
         turnDraft[insKey] = turnDraft[pairsKey].map((pair) => pair.in);
         turnDraft[outKey] = "";
-        render();
-      })
-    );
+        turnDraft[inKey] = "";
+        render({ preserveScroll: true });
+      });
+      panel.append(addPair);
+    }
+  } else {
+    turnDraft[inKey] = "";
   }
 
   if (turnDraft[pairsKey].length) {
     const pairs = el("div", "switch-pairs");
     turnDraft[pairsKey].forEach((pair) => {
-      const item = el("button", "switch-pair", `${pair.out} -> ${pair.in}`);
-      item.type = "button";
-      item.addEventListener("click", () => {
+      const item = el("div", "switch-pair");
+      const chips = el("div", "switch-pair-chips");
+      chips.append(
+        previewEventChip(pair.out, "out"),
+        previewEventChip(pair.in, "in")
+      );
+      const remove = el("button", "switch-pair-remove");
+      remove.type = "button";
+      remove.setAttribute("aria-label", "Remove switch");
+      remove.append(turnActionIcon("trash"));
+      remove.addEventListener("click", () => {
         turnDraft[pairsKey] = turnDraft[pairsKey].filter((saved) => saved.out !== pair.out);
         turnDraft[insKey] = turnDraft[pairsKey].map((saved) => saved.in);
-        render();
+        render({ preserveScroll: true });
       });
+      item.append(chips, remove);
       pairs.append(item);
     });
     panel.append(pairs);
@@ -897,9 +1076,17 @@ function upsertSwitchPair(pairs, nextPair) {
   return [...pairs.filter((pair) => pair.out !== nextPair.out), nextPair].slice(0, 2);
 }
 
-function switchGroup(label, names, selected, onChange, emptyText = "No options right now", maxSelected = 2) {
+function withConfirmedEntriesOnly(turnDraft) {
+  return {
+    ...turnDraft,
+    myEntries: turnDraft.myEntriesConfirmed ? [...(turnDraft.myEntries ?? [])] : [],
+    opponentEntries: turnDraft.opponentEntriesConfirmed ? [...(turnDraft.opponentEntries ?? [])] : [],
+  };
+}
+
+function switchGroup(label, names, selected, onChange, emptyText = "No options right now", maxSelected = 2, iconKind = "", tone = "") {
   const group = el("div", "mini-chip-group");
-  group.append(el("div", "mini-label", label));
+  group.append(el("div", "event-subtitle", label));
   if (!names.length) {
     group.append(el("div", "mini-empty", emptyText));
     return group;
@@ -907,14 +1094,72 @@ function switchGroup(label, names, selected, onChange, emptyText = "No options r
 
   const chips = el("div", "chip-grid compact-chips");
   names.forEach((name) => {
-    const chip = el("button", "chip switch-chip", name);
+    const chip = el("button", `chip switch-chip${tone ? ` is-${tone}` : ""}`);
     chip.type = "button";
     chip.classList.toggle("is-selected", selected.includes(name));
-    chip.addEventListener("click", () => onChange(toggleLimited(selected, name, maxSelected)));
+    chip.append(switchChipContent(name, iconKind));
+    chip.addEventListener("click", () => onChange(toggleSelection(selected, name, maxSelected)));
     chips.append(chip);
   });
   group.append(chips);
   return group;
+}
+
+function switchChipContent(name, iconKind) {
+  const wrap = el("span", "switch-chip-content");
+  if (iconKind) {
+    wrap.append(turnActionIcon(iconKind));
+  }
+  wrap.append(el("span", "switch-chip-name", name));
+  return wrap;
+}
+
+function turnActionIcon(kind) {
+  const common = {
+    class: `turn-action-icon is-${kind}`,
+    viewBox: "0 0 24 24",
+    fill: "none",
+    stroke: "currentColor",
+    "stroke-width": "2",
+    "stroke-linecap": "round",
+    "stroke-linejoin": "round",
+    "aria-hidden": "true",
+  };
+
+  if (kind === "in") {
+    return svgEl("svg", common, [
+      svgEl("path", { d: "m10 17 5-5-5-5" }),
+      svgEl("path", { d: "M15 12H3" }),
+      svgEl("path", { d: "M15 3h4a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-4" }),
+    ]);
+  }
+
+  if (kind === "out") {
+    return svgEl("svg", common, [
+      svgEl("path", { d: "m16 17 5-5-5-5" }),
+      svgEl("path", { d: "M21 12H9" }),
+      svgEl("path", { d: "M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" }),
+    ]);
+  }
+
+  if (kind === "ko") {
+    return svgEl("svg", common, [
+      svgEl("path", { d: "m12.5 17-.5-1-.5 1h1z" }),
+      svgEl("path", { d: "M15 22a1 1 0 0 0 1-1v-1a2 2 0 0 0 1.56-3.25 8 8 0 1 0-11.12 0A2 2 0 0 0 8 20v1a1 1 0 0 0 1 1z" }),
+      svgEl("circle", { cx: "15", cy: "12", r: "1" }),
+      svgEl("circle", { cx: "9", cy: "12", r: "1" }),
+    ]);
+  }
+
+  if (kind === "trash") {
+    return svgEl("svg", common, [
+      svgEl("path", { d: "M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6" }),
+      svgEl("path", { d: "M3 6h18" }),
+      svgEl("path", { d: "M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" }),
+    ]);
+  }
+
+  return svgEl("svg", common);
 }
 
 function boardPanel(label, myActive, opponentActive) {
@@ -955,11 +1200,19 @@ function getTurnEntryStatus(draft, myTeam, baseBoard = null) {
     board.opponentFainted,
     draft.turnDraft.opponentEntries
   );
-  const needsMyEntry = myMissing > draft.turnDraft.myEntries.length && myEntryChoices.length > 0;
-  const needsOpponentEntry = opponentMissing > draft.turnDraft.opponentEntries.length && opponentEntryChoices.length > 0;
+  const myRequiredEntries = Math.min(myMissing, myEntryChoices.length);
+  const opponentRequiredEntries = Math.min(opponentMissing, opponentEntryChoices.length);
+  const needsMyEntry =
+    myRequiredEntries > 0 &&
+    (draft.turnDraft.myEntries.length < myRequiredEntries || !draft.turnDraft.myEntriesConfirmed);
+  const needsOpponentEntry =
+    opponentRequiredEntries > 0 &&
+    (draft.turnDraft.opponentEntries.length < opponentRequiredEntries || !draft.turnDraft.opponentEntriesConfirmed);
   return {
     myMissing,
     opponentMissing,
+    myRequiredEntries,
+    opponentRequiredEntries,
     myEntryChoices,
     opponentEntryChoices,
     needsMyEntry,
@@ -968,13 +1221,38 @@ function getTurnEntryStatus(draft, myTeam, baseBoard = null) {
   };
 }
 
-function replacementChoices(names, active, fainted = [], selected = []) {
-  const selectedSet = new Set(selected);
-  return names.filter((name) => !active.includes(name) && !fainted.includes(name) && !selectedSet.has(name));
+function getNextTurnState(draft, myTeam) {
+  const board = boardBeforeTurn(draft, draft.editingTurnNumber ?? draft.turns.length + 1);
+  const myEntryChoices = replacementChoices(myTeam, board.myActive, board.myFainted, draft.turnDraft.myEntries);
+  const opponentEntryChoices = replacementChoices(
+    filledOpponentTeam(draft),
+    board.opponentActive,
+    board.opponentFainted,
+    draft.turnDraft.opponentEntries
+  );
+  const myOutOfPokemon = board.myActive.length === 0 && myEntryChoices.length === 0;
+  const opponentOutOfPokemon = board.opponentActive.length === 0 && opponentEntryChoices.length === 0;
+  return {
+    battleOver: myOutOfPokemon || opponentOutOfPokemon,
+    myOutOfPokemon,
+    opponentOutOfPokemon,
+  };
 }
 
-function mergeChoices(selected, available) {
-  return [...new Set([...(selected ?? []), ...(available ?? [])])];
+function inferredBattleResult(draft) {
+  if (!draft.turns?.length) return "";
+  const finalBoard = boardBeforeTurn(draft, draft.turns.length + 1);
+  if (finalBoard.myActive.length === 0 && finalBoard.opponentActive.length > 0) return "Loss";
+  if (finalBoard.opponentActive.length === 0 && finalBoard.myActive.length > 0) return "Win";
+  return "";
+}
+
+function replacementChoices(names, active, fainted = [], selected = []) {
+  return names.filter((name) => !active.includes(name) && !fainted.includes(name));
+}
+
+function mergeChoices(available, selected) {
+  return [...new Set([...(available ?? []), ...(selected ?? [])])];
 }
 
 function limitSelection(items, max) {
@@ -1104,22 +1382,36 @@ function pokemonSuggestions(draft) {
   return [...new Set([...POKEMON_NAMES, ...activeTeamNames(), ...filledOpponentTeam(draft)])].sort();
 }
 
-function enableNativeSuggest(input) {
-  const openPicker = () => {
+function enableNativeSuggest(input, listId, getNames) {
+  input.autocomplete = "off";
+  input.spellcheck = false;
+  input.removeAttribute("list");
+  input.addEventListener("input", () => {
+    const value = input.value.trim().toLowerCase();
+    const hasMatch =
+      value.length >= 3 &&
+      getNames().some((name) => name.toLowerCase().includes(value));
+    if (!hasMatch) {
+      input.removeAttribute("list");
+      return;
+    }
+    input.setAttribute("list", listId);
     if (typeof input.showPicker !== "function") return;
     try {
       input.showPicker();
     } catch {}
-  };
-
-  input.autocomplete = "off";
-  input.spellcheck = false;
-  input.addEventListener("focus", openPicker);
-  input.addEventListener("click", openPicker);
+  });
 }
 
 function toggleLimited(items, value, max) {
   if (items.includes(value)) return items.filter((item) => item !== value);
+  if (items.length >= max) return items;
+  return [...items, value];
+}
+
+function toggleSelection(items, value, max) {
+  if (items.includes(value)) return items.filter((item) => item !== value);
+  if (max === 1) return [value];
   if (items.length >= max) return items;
   return [...items, value];
 }
@@ -1130,19 +1422,15 @@ function turnSummary(turn) {
   return turnSummaryDetails(turn, parts);
 }
 
-function turnEventSummary(turn) {
-  return turnSummaryDetails(turn, []);
-}
-
 function turnSummaryDetails(turn, parts = []) {
-  if (turn.myEntries?.length) parts.push(`Me in: ${turn.myEntries.join(" / ")}`);
-  if (turn.opponentEntries?.length) parts.push(`Opp in: ${turn.opponentEntries.join(" / ")}`);
+  if (turn.myEntries?.length) parts.push(`My in: ${turn.myEntries.join(" / ")}`);
+  if (turn.opponentEntries?.length) parts.push(`Opponent in: ${turn.opponentEntries.join(" / ")}`);
   const mySwitchText = switchText(turn.mySwitchPairs, turn.mySwitches);
   const opponentSwitchText = switchText(turn.opponentSwitchPairs, turn.opponentSwitches);
-  if (mySwitchText) parts.push(`Me switch: ${mySwitchText}`);
-  if (opponentSwitchText) parts.push(`Opp switch: ${opponentSwitchText}`);
-  if (turn.myKos?.length) parts.push(`Me KO: ${turn.myKos.join(" / ")}`);
-  if (turn.opponentKos?.length) parts.push(`Opp KO: ${turn.opponentKos.join(" / ")}`);
+  if (mySwitchText) parts.push(`My switch: ${mySwitchText}`);
+  if (opponentSwitchText) parts.push(`Opponent switch: ${opponentSwitchText}`);
+  if (turn.myKos?.length) parts.push(`My KO: ${turn.myKos.join(" / ")}`);
+  if (turn.opponentKos?.length) parts.push(`Opponent KO: ${turn.opponentKos.join(" / ")}`);
   return parts.join(" | ") || "No note";
 }
 
@@ -1160,15 +1448,108 @@ function appendTurnPreviewLines(container, battle, turn) {
   const board = boardBeforeTurn(battle, turn.number);
   const boardStart = previewBoard(board, turn, { includeSwitches: false, includeKos: false });
   const boardAfter = previewBoard(board, turn);
-  container.append(el("p", "turn-preview-line", `Start: ${battleBoardLine(boardStart)}`));
+  container.append(previewBoardLine("Start turn", boardStart));
+  appendPreviewEventLines(container, turn);
+  container.append(previewBoardLine("End turn", boardAfter));
   if (turn.note) {
-    container.append(el("p", "turn-preview-line", turn.note));
+    container.append(previewNoteLine(turn.note, turn.noteSource ?? inferTurnNoteSource(turn)));
   }
-  const summary = turnEventSummary(turn);
-  if (summary !== "No note") {
-    container.append(el("p", "turn-preview-line is-muted", summary));
+}
+
+function previewBoardLine(label, board) {
+  const line = el("div", "turn-preview-line turn-preview-board");
+  line.append(el("strong", "turn-preview-board-label", label));
+
+  const flow = el("div", "turn-preview-board-flow");
+  const mySide = el("div", "turn-preview-board-side is-my");
+  (board.myActive.length ? board.myActive : []).forEach((name) => {
+    mySide.append(el("span", "roster-chip board-roster-chip is-lead-outline", name));
+  });
+
+  const opponentSide = el("div", "turn-preview-board-side is-opp");
+  (board.opponentActive.length ? board.opponentActive : []).forEach((name) => {
+    opponentSide.append(el("span", "roster-chip board-roster-chip is-lead", name));
+  });
+
+  if (board.myActive.length) flow.append(mySide);
+  if (board.myActive.length && board.opponentActive.length) {
+    flow.append(el("span", "turn-preview-board-vs", "VS"));
   }
-  container.append(el("p", "turn-preview-line is-muted", `After: ${battleBoardLine(boardAfter)}`));
+  if (board.opponentActive.length) flow.append(opponentSide);
+  line.append(flow);
+  return line;
+}
+
+function previewNoteLine(text, source = "manual") {
+  const line = el("div", "turn-preview-line turn-preview-note is-muted");
+  const copy = el("div", "turn-preview-note-copy");
+  copy.append(
+    el("span", "turn-preview-note-label", source === "showdown" ? "Showdown log" : "Notes"),
+    el("span", "turn-preview-note-text", text)
+  );
+  line.append(copy);
+  return line;
+}
+
+function inferTurnNoteSource(turn) {
+  return turn?.noteSource ?? (String(turn?.note ?? "").includes("\n") ? "showdown" : "manual");
+}
+
+function appendPreviewEventLines(container, turn) {
+  previewEventItems(turn).forEach((event) => container.append(previewEventLine(event)));
+}
+
+function previewEventItems(turn) {
+  const items = [];
+  if (turn.myEntries?.length) items.push({ kind: "in", label: "My in", names: turn.myEntries });
+  if (turn.opponentEntries?.length) items.push({ kind: "in", label: "Opponent in", names: turn.opponentEntries });
+  (turn.mySwitchPairs ?? []).forEach((pair) => items.push({ kind: "switch", label: "My switch", out: pair.out, in: pair.in }));
+  (turn.opponentSwitchPairs ?? []).forEach((pair) => items.push({ kind: "switch", label: "Opponent switch", out: pair.out, in: pair.in }));
+  const myLooseSwitches = previewLooseSwitches(turn.mySwitchPairs, turn.mySwitches);
+  if (myLooseSwitches.length) items.push({ kind: "in", label: "My switch", names: myLooseSwitches });
+  const oppLooseSwitches = previewLooseSwitches(turn.opponentSwitchPairs, turn.opponentSwitches);
+  if (oppLooseSwitches.length) items.push({ kind: "in", label: "Opponent switch", names: oppLooseSwitches });
+  if (turn.myKos?.length) items.push({ kind: "ko", label: "My KO", names: turn.myKos });
+  if (turn.opponentKos?.length) items.push({ kind: "ko", label: "Opponent KO", names: turn.opponentKos });
+  return items;
+}
+
+function previewLooseSwitches(pairs = [], switches = []) {
+  const usedIncoming = new Set((pairs ?? []).filter((pair) => pair?.in).map((pair) => pair.in));
+  return (switches ?? []).filter((name) => name && !usedIncoming.has(name));
+}
+
+function previewEventLine(event) {
+  const lineClass = event.kind === "switch" ? "turn-preview-line turn-preview-event is-muted is-switch" : "turn-preview-line turn-preview-event is-muted";
+  const line = el("div", lineClass);
+  line.append(el("span", "turn-preview-board-label turn-preview-event-section-label", event.label));
+  if (event.kind === "switch") {
+    const flow = el("span", "turn-preview-switch-flow");
+    flow.append(
+      previewEventChip(event.out || "?", "out"),
+      previewEventChip(event.in || "?", "in")
+    );
+    line.append(flow);
+    return line;
+  }
+
+  line.append(previewEventNames(event.kind, event.names ?? []));
+  return line;
+}
+
+function previewEventNames(kind, names) {
+  const wrap = el("span", "turn-preview-event-names");
+  names.forEach((name) => {
+    wrap.append(previewEventChip(name, kind));
+  });
+  return wrap;
+}
+
+function previewEventChip(name, kind) {
+  const tone = kind === "ko" ? " is-ko-event" : "";
+  const chip = el("span", `roster-chip board-roster-chip turn-event-chip${tone}`, "");
+  chip.append(turnActionIcon(kind), el("span", "turn-event-chip-name", name));
+  return chip;
 }
 
 function battleBoardLine(board) {
@@ -1180,11 +1561,11 @@ function battleBoardLine(board) {
 function turnEventGroups(turn) {
   return [
     { label: "My entry", names: turn.myEntries ?? [] },
-    { label: "Opp entry", names: turn.opponentEntries ?? [] },
+    { label: "Opponent entry", names: turn.opponentEntries ?? [] },
     { label: "My switch", names: switchLabels(turn.mySwitchPairs, turn.mySwitches) },
-    { label: "Opp switch", names: switchLabels(turn.opponentSwitchPairs, turn.opponentSwitches) },
+    { label: "Opponent switch", names: switchLabels(turn.opponentSwitchPairs, turn.opponentSwitches) },
     { label: "My KO", names: turn.myKos ?? [], tone: "ko" },
-    { label: "Opp KO", names: turn.opponentKos ?? [], tone: "ko" },
+    { label: "Opponent KO", names: turn.opponentKos ?? [], tone: "ko" },
   ];
 }
 
@@ -1207,6 +1588,11 @@ function switchLabels(pairs = [], switches = []) {
 
 function renderReview() {
   const draft = state.draft;
+  ensureDraftShape(draft);
+  if (!["Win", "Loss"].includes(draft.result)) {
+    const autoResult = inferredBattleResult(draft);
+    if (autoResult) draft.result = autoResult;
+  }
 
   const resultGroup = el("div", "group");
   resultGroup.append(el("div", "group-title", "Result"));
@@ -1227,12 +1613,8 @@ function renderReview() {
   turnGroup.append(el("div", "group-title", "Key Turn"));
   const turnGrid = el("div", "review-turn-list");
   const turns = draft.turns;
-  if (!draft.errorTurn) draft.errorTurn = String(turns[0].number);
   turns.forEach((turn) => {
     const card = el("div", "review-turn-card");
-    const board = boardBeforeTurn(draft, turn.number);
-    const boardStart = previewBoard(board, turn, { includeSwitches: false, includeKos: false });
-    const boardAfter = previewBoard(board, turn);
     const header = el("div", "archive-turn-header");
     const pick = el(
       "button",
@@ -1241,13 +1623,13 @@ function renderReview() {
     );
     pick.type = "button";
     pick.addEventListener("click", () => {
-      draft.errorTurn = String(turn.number);
+      draft.errorTurn = draft.errorTurn === String(turn.number) ? "" : String(turn.number);
       render();
     });
     header.append(el("strong", "", `Turn ${turn.number}`), pick);
 
-    const feedbackField = el("div", "field compact-field");
-    const feedbackLabel = el("label", "", "Feedback");
+    const feedbackField = el("div", "field compact-field turn-feedback-field");
+    const feedbackLabel = el("label", "turn-preview-board-label plain-field-label", "Feedback");
     feedbackLabel.htmlFor = `turnFeedback${turn.number}`;
     const feedback = el("input", "mini-input");
     feedback.id = `turnFeedback${turn.number}`;
@@ -1259,17 +1641,15 @@ function renderReview() {
     });
     feedbackField.append(feedbackLabel, feedback);
 
-    card.append(header, boardPanel("Start", boardStart.myActive, boardStart.opponentActive));
-    if (turn.note) card.append(el("p", "archive-note", turn.note));
-    const events = rosterBlock("Turn events", turnEventGroups(turn), false);
-    if (events) card.append(events);
-    card.append(boardPanel("After", boardAfter.myActive, boardAfter.opponentActive), feedbackField);
+    card.append(header);
+    appendTurnPreviewLines(card, draft, turn);
+    card.append(feedbackField);
     turnGrid.append(card);
   });
   turnGroup.append(turnGrid);
 
   const takeawayField = el("div", "field");
-  const takeawayLabel = el("label", "", "Takeaway");
+  const takeawayLabel = el("label", "", "Takeaways");
   takeawayLabel.htmlFor = "takeaway";
   const takeaway = el("textarea", "takeaway-note");
   takeaway.id = "takeaway";
@@ -1308,15 +1688,23 @@ function renderReview() {
 }
 
 function renderDashboard() {
-  const controls = el("div", "dashboard-filters");
-  const rangeGroup = el("div", "filter-cluster");
-  rangeGroup.append(el("div", "dash-label", "Range"));
-  const rangeRow = el("div", "segment-row");
+  const filtered = getDashboardBattles();
+  const performance = getDashboardPerformance(filtered);
+  const kpis = getDashboardKpis(filtered);
+
+  const performanceBlock = el("div", `dash-block dashboard-hero trend-${performance.trend}`);
+  const heroHead = el("div", "dashboard-hero-head");
+  heroHead.append(
+    el("strong", "dashboard-card-title", "Performance"),
+    el("div", `trend-pill is-${performance.trend}`, performance.trendLabel)
+  );
+
+  const rangeRow = el("div", "segment-row dashboard-range-row");
   [
     ["day", "Day"],
     ["week", "Week"],
     ["month", "Month"],
-    ["global", "Global"],
+    ["global", "All time"],
   ].forEach(([value, label]) => {
     const button = el("button", "segment-button", label);
     button.type = "button";
@@ -1327,60 +1715,36 @@ function renderDashboard() {
     });
     rangeRow.append(button);
   });
-  rangeGroup.append(rangeRow);
 
-  const resultsGroup = el("div", "filter-cluster");
-  resultsGroup.append(el("div", "dash-label", "Results"));
-  const resultRow = el("div", "filter-row");
-  [
-    ["all", "All results"],
-    ["Win", "Wins"],
-    ["Loss", "Losses"],
-  ].forEach(([value, label]) => {
-    const chip = el("button", "chip filter-chip", label);
-    chip.type = "button";
-    chip.classList.toggle("is-selected", state.dashboardResultFilter === value);
-    chip.addEventListener("click", () => {
-      state.dashboardResultFilter = value;
-      render();
-    });
-    resultRow.append(chip);
-  });
-  resultsGroup.append(resultRow);
-  controls.append(rangeGroup, resultsGroup);
-
-  const filtered = getDashboardBattles();
-  const performance = getDashboardPerformance(filtered);
-  const kpis = getDashboardKpis(filtered);
-
-  const kpiGrid = el("div", "kpi-grid");
-  const matchesCard = el("div", "dash-block kpi-card");
-  matchesCard.append(
-    el("div", "dash-label", "Matches"),
-    el("div", "kpi-value", String(kpis.matches)),
-    el("div", "kpi-sub", kpis.matchesSub)
+  const heroPrimary = el("div", "dashboard-hero-primary");
+  const heroRate = el("div", "dashboard-hero-rate");
+  heroRate.append(
+    el("strong", "", `${performance.current}%`),
+    el("span", "", performance.rateCaption)
   );
-  kpiGrid.append(matchesCard);
-
-  const winRateCard = el("div", "dash-block kpi-card");
-  winRateCard.append(
-    el("div", "dash-label", "Win rate"),
-    el("div", "kpi-value", `${kpis.winRate}%`),
-    winLossSubline(kpis.wins, kpis.losses)
+  const heroContext = el("div", "dashboard-hero-context");
+  heroContext.append(
+    el("div", "dashboard-context-line", performance.deltaLabel),
+    el("div", "dashboard-context-line is-muted", performance.matchesLabel)
   );
-  kpiGrid.append(winRateCard);
+  heroPrimary.append(heroRate, heroContext);
 
-  const performanceBlock = el("div", `dash-block trend-${performance.trend}`);
-  const performanceLine = el("div", "performance-line");
-  performanceLine.append(el("strong", "", `${performance.current}%`), el("span", "", performance.arrow));
+  const heroStats = el("div", "dashboard-mini-grid");
+  heroStats.append(
+    dashboardMiniStat("Latest window", `${performance.current}%`, performance.recentCount ? `${performance.recentCount} decided matches` : "No matches yet"),
+    dashboardMiniStat("Previous window", performance.previousCount ? `${performance.previous}%` : "—", performance.previousCount ? `${performance.previousCount} decided matches` : "No earlier window"),
+    dashboardMiniStat("Record", `${kpis.wins}-${kpis.losses}`, rangeLabel())
+  );
+
   performanceBlock.append(
-    el("div", "dash-label", "Performance"),
-    performanceLine,
-    performanceChart(performance.series),
-    el("div", "dash-sub", `${rangeLabel()} · ${performance.matchesLabel}`)
+    heroHead,
+    rangeRow,
+    heroPrimary,
+    performanceChart(performance.series, performance.trend),
+    heroStats
   );
 
-  screen.append(controls, performanceBlock, kpiGrid);
+  screen.append(performanceBlock);
 }
 
 function renderTeams() {
@@ -1409,32 +1773,48 @@ function renderTeams() {
     row.classList.toggle("is-active", team.id === state.activeTeamId);
 
     const body = el("div", "team-card-main");
-    const copy = el("div", "team-card-copy");
-    copy.append(el("strong", "", team.name), el("span", "", team.names.join(" / ")));
-    body.append(copy);
+    const header = el("div", "team-card-header");
+    const title = el("input", "team-card-title");
+    title.type = "text";
+    title.value = team.name ?? "";
+    title.placeholder = "Team name";
+    title.addEventListener("input", () => {
+      team.name = title.value.slice(0, 60);
+    });
+    title.addEventListener("blur", () => {
+      team.name = title.value.trim();
+      title.value = team.name;
+      writeJson(STORAGE.teams, state.teams);
+      render();
+    });
+    const statusWrap = el("div", "team-card-status");
+    header.append(title, statusWrap);
 
-    const actions = el("div", "team-card-actions");
+    const roster = teamNames(team.names);
+    roster.classList.add("team-card-roster-slots");
+    body.append(header, roster);
+
     if (team.id === state.activeTeamId) {
-      const activeTag = el("button", "tiny-button", "Active");
+      const activeTag = el("button", "result-chip is-key key-turn-button team-status-button", "Active");
       activeTag.type = "button";
       activeTag.disabled = true;
-      actions.append(activeTag);
+      statusWrap.append(activeTag);
     } else {
-      const setActive = el("button", "tiny-button", "Set active");
+      const setActive = el("button", "tiny-button key-turn-button team-status-button", "Set active");
       setActive.type = "button";
       setActive.addEventListener("click", () => activateTeam(team.id));
-      actions.append(setActive);
+      statusWrap.append(setActive);
     }
 
-    const remove = el("button", "tiny-button is-danger", "Delete");
+    const remove = el("button", "tiny-button is-danger team-delete-button", "Delete");
     remove.type = "button";
     remove.addEventListener("click", () => {
       if (!confirm("Delete this team? This cannot be undone.")) return;
       deleteTeam(team.id);
     });
-    actions.append(remove);
+    body.append(remove);
 
-    row.append(body, actions);
+    row.append(body);
     list.append(row);
   });
   savedGroup.append(list);
@@ -1457,6 +1837,8 @@ function renderArchive() {
     return;
   }
 
+  screen.append(renderArchiveImportGroup());
+
   if (!state.battles.length) {
     screen.append(el("div", "empty", "No saved games yet."));
     return;
@@ -1466,43 +1848,24 @@ function renderArchive() {
   state.battles.forEach((battle, index) => {
     const card = el("button", "archive-card");
     card.type = "button";
-    const myLead = battle.lead ?? battle.used?.slice(0, 2) ?? [];
-    const myBack = battle.back ?? battle.used?.slice(2, 4) ?? [];
-    const opponentLead = battle.opponentLead ?? [];
-    const opponentBack = observedOpponentBack(battle);
     const header = el("div", "archive-card-header");
     header.append(
       el("strong", "", formatDate(battle.savedAt ?? battle.createdAt)),
       resultChip(battle.result)
     );
-
-    const myPickGroup = el("div", "archive-card-pick-group is-my");
-    myPickGroup.append(
-      compactRosterRow("My lead", myLead, () => "lead-outline"),
-      compactRosterRow("My back", myBack, () => "back-outline")
-    );
-
-    const oppPickGroup = el("div", "archive-card-pick-group is-opp");
-    if (opponentLead.length) {
-      oppPickGroup.append(compactRosterRow("Opp lead", opponentLead, () => "lead"));
-    }
-    if (opponentBack.length) {
-      oppPickGroup.append(compactRosterRow("Opp back", opponentBack, () => "back"));
-    }
-    card.append(header, myPickGroup);
-    if (oppPickGroup.childElementCount) {
-      card.append(oppPickGroup);
-    }
+    const compare = archivePicksCompareRow(battle, true);
+    card.append(header);
+    if (compare) card.append(compare);
     if (battle.note) {
-      const preview = el("div", "turn-preview-card archive-card-preview");
-      preview.append(el("p", "turn-preview-line", `Battle snapshot: ${battle.note}`));
+      const preview = el("div", "archive-card-preview");
+      preview.append(previewLabeledText("Game Plan", battle.note));
       if (battle.takeaway) {
-        preview.append(el("p", "turn-preview-line is-muted", `Takeaway: ${battle.takeaway}`));
+        preview.append(previewLabeledText("Takeaways", battle.takeaway, true));
       }
       card.append(preview);
     } else if (battle.takeaway) {
-      const preview = el("div", "turn-preview-card archive-card-preview");
-      preview.append(el("p", "turn-preview-line is-muted", `Takeaway: ${battle.takeaway}`));
+      const preview = el("div", "archive-card-preview");
+      preview.append(previewLabeledText("Takeaways", battle.takeaway, true));
       card.append(preview);
     }
     card.addEventListener("click", () => {
@@ -1512,6 +1875,61 @@ function renderArchive() {
     list.append(card);
   });
   screen.append(list);
+}
+
+function renderArchiveImportGroup() {
+  const group = el("div", "settings-grid archive-import-grid");
+
+  const replayInput = el("input", "file-input");
+  replayInput.type = "file";
+  replayInput.accept = "text/html,.html";
+  replayInput.addEventListener("change", () => {
+    const file = replayInput.files?.[0];
+    if (file) handleBattleReplayFile(file);
+    replayInput.value = "";
+  });
+
+  const markdownInput = el("input", "file-input");
+  markdownInput.type = "file";
+  markdownInput.accept = "text/markdown,.md,text/plain";
+  markdownInput.addEventListener("change", () => {
+    const file = markdownInput.files?.[0];
+    if (file) handleBattleMarkdownFile(file);
+    markdownInput.value = "";
+  });
+
+  if (!state.replayImport) {
+    const replayButton = el("button", "secondary import-button", "Import Showdown Replay");
+    replayButton.type = "button";
+    replayButton.addEventListener("click", () => replayInput.click());
+
+    const markdownButton = el("button", "secondary import-button", "Import from markdown");
+    markdownButton.type = "button";
+    markdownButton.addEventListener("click", () => markdownInput.click());
+
+    group.append(replayButton, markdownButton, replayInput, markdownInput);
+    return group;
+  }
+
+  group.append(replayInput, markdownInput);
+  const prompt = el("div", "group replay-import-prompt");
+  const promptHeader = el("div", "archive-card-header");
+  promptHeader.append(
+    el("div", "turn-preview-board-label", "Which side are you?"),
+    replayCancelButton()
+  );
+  const options = el("div", "replay-choice-list");
+  ["p1", "p2"].forEach((side) => options.append(replayChoiceButton(state.replayImport, side)));
+  const confirm = el("button", "primary", "Confirm side");
+  confirm.type = "button";
+  confirm.disabled = !state.replayImportChoice;
+  confirm.addEventListener("click", () => {
+    if (!state.replayImportChoice) return;
+    finalizeReplayImport(state.replayImportChoice);
+  });
+  prompt.append(promptHeader, options, confirm);
+  group.append(prompt);
+  return group;
 }
 
 function renderArchiveDetail() {
@@ -1540,9 +1958,18 @@ function renderArchiveDetail() {
     { label: "Lead", names: battle.lead ?? battle.used.slice(0, 2), tone: "lead-outline" },
     { label: "Back", names: battle.back ?? battle.used.slice(2, 4), tone: "back-outline" },
   ]);
+  const picksCompare = archivePicksCompareRow(battle);
+  const teamPreview = el("div", "group");
+  teamPreview.append(el("div", "group-title", "Team Preview"));
+  if (picksCompare ?? team ?? opponent) {
+    teamPreview.append(picksCompare ?? team ?? opponent);
+  }
+
+  const gamePlan = el("div", "group");
+  gamePlan.append(el("div", "group-title", "Game Plan"));
 
   const turns = el("div", "group");
-  turns.append(el("div", "group-title", "Turn Notes"));
+  turns.append(el("div", "group-title", "Turns"));
   const turnList = el("div", "archive-turns");
   if (battle.turns?.length) {
     battle.turns.forEach((turn) => {
@@ -1555,7 +1982,7 @@ function renderArchiveDetail() {
       );
       keyTurnButton.type = "button";
       keyTurnButton.addEventListener("click", () => {
-        battle.errorTurn = String(turn.number);
+        battle.errorTurn = battle.errorTurn === String(turn.number) ? "" : String(turn.number);
         writeJson(STORAGE.battles, state.battles);
         render();
       });
@@ -1566,8 +1993,8 @@ function renderArchiveDetail() {
       card.append(header);
       appendTurnPreviewLines(card, battle, turn);
 
-      const feedbackField = el("div", "field compact-field");
-      const feedbackLabel = el("label", "", "Feedback");
+      const feedbackField = el("div", "field compact-field turn-feedback-field");
+      const feedbackLabel = el("label", "turn-preview-board-label plain-field-label", "Feedback");
       feedbackLabel.htmlFor = `archiveTurnFeedback${turn.number}`;
       const feedback = el("textarea", "archive-feedback-input auto-grow-textarea");
       feedback.id = `archiveTurnFeedback${turn.number}`;
@@ -1589,17 +2016,7 @@ function renderArchiveDetail() {
   }
   turns.append(turnList);
 
-  const review = el("div", "dash-block");
-  review.append(el("div", "dash-label", "Review"));
-  if (battle.errorTurn) {
-    review.append(el("p", "dash-text", `Key turn: T${battle.errorTurn}`));
-  } else {
-    review.append(el("p", "dash-text", "No key turn selected."));
-  }
-
   const snapshotField = el("div", "field compact-field");
-  const snapshotLabel = el("label", "", "Battle snapshot");
-  snapshotLabel.htmlFor = "archiveBattleSnapshot";
   const snapshot = el("textarea", "takeaway-note archive-takeaway-note");
   snapshot.id = "archiveBattleSnapshot";
   snapshot.rows = 4;
@@ -1611,11 +2028,12 @@ function renderArchiveDetail() {
     autoResizeTextarea(snapshot);
     writeJson(STORAGE.battles, state.battles);
   });
-  snapshotField.append(snapshotLabel, snapshot);
+  snapshotField.append(snapshot);
+  gamePlan.append(snapshotField);
 
+  const takeaways = el("div", "group");
+  takeaways.append(el("div", "group-title", "Takeaways"));
   const takeawayField = el("div", "field compact-field");
-  const takeawayLabel = el("label", "", "Takeaway");
-  takeawayLabel.htmlFor = "archiveTakeaway";
   const takeaway = el("textarea", "takeaway-note archive-takeaway-note");
   takeaway.id = "archiveTakeaway";
   takeaway.rows = 3;
@@ -1627,21 +2045,70 @@ function renderArchiveDetail() {
     autoResizeTextarea(takeaway);
     writeJson(STORAGE.battles, state.battles);
   });
-  takeawayField.append(takeawayLabel, takeaway);
+  takeawayField.append(takeaway);
+  takeaways.append(takeawayField);
 
-  review.append(snapshotField, takeawayField);
+  const exportBattleButton = el("button", "secondary export-button", "Export battle");
+  exportBattleButton.type = "button";
+  exportBattleButton.addEventListener("click", () => {
+    const stamp = dateStamp(battle.savedAt ?? battle.createdAt);
+    download(
+      `battle-log-${stamp}.md`,
+      battleToMarkdown(battle),
+      "text/markdown;charset=utf-8"
+    );
+  });
 
-  const danger = el("div", "dash-block danger-block");
-  danger.append(el("div", "dash-label", "Danger"));
-  const deleteBattleButton = el("button", "danger-button", "Delete battle");
+  const deleteBattleButton = el("button", "danger-button", "Delete");
   deleteBattleButton.type = "button";
   deleteBattleButton.addEventListener("click", () => {
     if (!confirm("Delete this battle? This cannot be undone.")) return;
     deleteBattle(Number(state.archiveDetailId));
   });
-  danger.append(deleteBattleButton);
 
-  [summary, team, opponent, turns, review, danger].filter(Boolean).forEach((node) => screen.append(node));
+  const battleActions = el("div", "archive-detail-actions");
+  battleActions.append(deleteBattleButton, exportBattleButton);
+
+  [summary, teamPreview, gamePlan, turns, takeaways, battleActions].filter(Boolean).forEach((node) => screen.append(node));
+}
+
+function archivePicksCompareRow(battle, compact = false) {
+  const myNames = (battle.teamNames ?? []).filter(Boolean);
+  const opponentNames = (battle.opponentTeam ?? []).filter(Boolean);
+  if (!myNames.length && !opponentNames.length) return null;
+
+  const row = el("div", `picks-compare-grid${compact ? " is-compact" : ""}`);
+  const myLead = new Set(battle.lead ?? battle.used.slice(0, 2));
+  const myBack = new Set(battle.back ?? battle.used.slice(2, 4));
+  const opponentLead = new Set(battle.opponentLead ?? []);
+  const opponentBack = new Set(observedOpponentBack(battle));
+
+  row.append(
+    picksCompareCard("My Team", myNames, (name) => {
+      if (myLead.has(name)) return "lead-outline";
+      if (myBack.has(name)) return "back-outline";
+      return "";
+    }, compact),
+    picksCompareCard("Opponent Team", opponentNames, (name) => {
+      if (opponentLead.has(name)) return "lead";
+      if (opponentBack.has(name)) return "back";
+      return "";
+    }, compact)
+  );
+
+  return row;
+}
+
+function picksCompareCard(title, names, toneForName, compact = false) {
+  const card = el("div", `dash-block picks-compare-card${compact ? " is-compact" : ""}`);
+  card.append(el("div", "dash-label", title));
+  const list = el("div", `picks-compare-list${compact ? " is-compact" : ""}`);
+  names.forEach((name) => {
+    const tone = toneForName(name);
+    list.append(el("span", `roster-chip picks-compare-chip ${compact ? "is-compact " : ""}${tone ? `is-${tone}` : ""}`.trim(), name));
+  });
+  card.append(list);
+  return card;
 }
 
 function rosterBlock(title, groups, framed = true) {
@@ -1683,6 +2150,17 @@ function resultChip(result) {
   return el("span", `result-chip ${tone}`.trim(), result || "Pending");
 }
 
+function previewLabeledText(label, text, muted = false) {
+  const block = el("div", `turn-preview-line turn-preview-note${muted ? " is-muted" : ""}`);
+  const copy = el("div", "turn-preview-note-copy");
+  copy.append(
+    el("span", "turn-preview-note-label", label),
+    el("span", "turn-preview-note-text", text)
+  );
+  block.append(copy);
+  return block;
+}
+
 function observedOpponentBack(battle) {
   const lead = new Set(battle.opponentLead ?? []);
   const seenBack = new Set();
@@ -1707,7 +2185,7 @@ function renderSettings() {
     el("p", "dash-text", "Export or import your full app data backup.")
   );
 
-  const exportAll = el("button", "secondary", "Export data backup (JSON)");
+  const exportAll = el("button", "secondary export-button", "Export backup");
   exportAll.type = "button";
   exportAll.addEventListener("click", () => {
     download("vgc-notes-backup.json", JSON.stringify(createBackup(), null, 2), "application/json;charset=utf-8");
@@ -1722,11 +2200,11 @@ function renderSettings() {
     importInput.value = "";
   });
 
-  const importAll = el("button", "secondary", "Import data backup (JSON)");
+  const importAll = el("button", "secondary import-button", "Import backup");
   importAll.type = "button";
   importAll.addEventListener("click", () => importInput.click());
 
-  const actions = el("div", "settings-grid");
+  const actions = el("div", "settings-grid settings-actions-row");
   actions.append(exportAll, importAll, importInput);
 
   const danger = el("div", "dash-block danger-block");
@@ -1748,6 +2226,17 @@ function activeTeam() {
 
 function activeTeamNames() {
   return activeTeam()?.names ?? [];
+}
+
+function savedTeamById(teamId) {
+  return state.teams.find((team) => team.id === teamId) ?? null;
+}
+
+function battleFullTeamNames(battle) {
+  if (battle?.teamNames?.length) return battle.teamNames.filter(Boolean);
+  const savedTeam = battle?.teamId ? savedTeamById(battle.teamId) : null;
+  if (savedTeam?.names?.length) return savedTeam.names.filter(Boolean);
+  return [...new Set([...(battle?.used ?? []), ...(battle?.lead ?? []), ...(battle?.back ?? [])])].filter(Boolean);
 }
 
 function teamNames(names) {
@@ -1853,7 +2342,6 @@ function getDashboardBattles() {
   return state.battles.filter((battle) => {
     const savedAt = battle.savedAt ?? battle.createdAt;
     if (!matchesDashboardRange(savedAt)) return false;
-    if (state.dashboardResultFilter !== "all" && battle.result !== state.dashboardResultFilter) return false;
     return true;
   });
 }
@@ -1892,17 +2380,23 @@ function getDashboardPerformance(filteredBattles) {
   const diff = current - prior;
   const hasComparison = previous.length > 0;
   const trend = !hasComparison || Math.abs(diff) < 5 ? "stable" : diff > 0 ? "improving" : "declining";
-  const arrows = { improving: "^ improving", stable: "-> stable", declining: "v declining" };
+  const trendLabel = { improving: "Improving", stable: "Stable", declining: "Declining" }[trend];
+  const rateCaption = recent.length ? `Win rate in the latest window` : `No decided matches yet`;
+  const deltaLabel = !hasComparison
+    ? "No earlier comparison window yet."
+    : `Compared with the previous ${previous.length}: ${prior}% (${diff > 0 ? "+" : ""}${diff})`;
 
   return {
     current,
     previous: prior,
     trend,
-    arrow: arrows[trend],
+    trendLabel,
+    rateCaption,
+    deltaLabel,
     series: getDashboardSeries(decided),
-    matchesLabel: recent.length && previous.length
-      ? `Last 10 / previous 10: ${current}% / ${prior}%`
-      : `${decided.length} decided matches`,
+    recentCount: recent.length,
+    previousCount: previous.length,
+    matchesLabel: decided.length ? `${decided.length} decided matches in ${rangeLabel().toLowerCase()}` : `No decided matches in ${rangeLabel().toLowerCase()}`,
   };
 }
 
@@ -2013,40 +2507,99 @@ function getPerformanceSeries() {
   });
 }
 
-function performanceChart(series) {
+function performanceChart(series, trend = "stable") {
   const wrap = el("div", "chart-wrap");
   if (!series.length) {
     wrap.append(el("div", "chart-empty", "Play matches to draw trend."));
     return wrap;
   }
-
-  const width = 320;
-  const height = 116;
-  const pad = 10;
-  const usableWidth = width - pad * 2;
-  const usableHeight = height - pad * 2;
-  const xStep = series.length > 1 ? usableWidth / (series.length - 1) : 0;
-  const points = series.map((value, index) => {
-    const x = pad + index * xStep;
-    const y = pad + usableHeight - (value / 100) * usableHeight;
-    return [x, y];
-  });
-  const path = points.map(([x, y], index) => `${index ? "L" : "M"} ${x.toFixed(1)} ${y.toFixed(1)}`).join(" ");
-  const area = `${path} L ${pad + xStep * (series.length - 1)} ${height - pad} L ${pad} ${height - pad} Z`;
-
-  const svg = svgEl("svg", { viewBox: `0 0 ${width} ${height}`, role: "img", "aria-label": "Win rate trend chart" });
-  [25, 50, 75].forEach((value) => {
-    const y = pad + usableHeight - (value / 100) * usableHeight;
-    svg.append(svgEl("line", { class: "chart-grid", x1: pad, y1: y, x2: width - pad, y2: y }));
-  });
-  svg.append(svgEl("path", { class: "chart-area", d: area }));
-  svg.append(svgEl("path", { class: "chart-line", d: path }));
-  points.forEach(([x, y]) => {
-    svg.append(svgEl("circle", { class: "chart-point", cx: x, cy: y, r: 2.6 }));
-  });
-
-  wrap.append(svg);
+  if (!window.echarts) {
+    wrap.append(el("div", "chart-empty", "Chart library not available."));
+    return wrap;
+  }
+  const chart = el("div", "echart-canvas");
+  wrap.append(chart);
+  requestAnimationFrame(() => initPerformanceChart(chart, series, trend));
   return wrap;
+}
+
+function initPerformanceChart(node, series, trend = "stable") {
+  if (!node.isConnected || !window.echarts) return;
+  const lineColor = trend === "declining" ? "#ff756f" : trend === "stable" ? "#9fb2c8" : "#5ee0c2";
+  const areaTop = trend === "declining" ? "rgba(255,117,111,0.24)" : trend === "stable" ? "rgba(159,178,200,0.22)" : "rgba(94,224,194,0.28)";
+  const areaBottom = trend === "declining" ? "rgba(255,117,111,0.04)" : trend === "stable" ? "rgba(159,178,200,0.03)" : "rgba(94,224,194,0.03)";
+  const chart = window.echarts.init(node, null, { renderer: "svg" });
+  performanceChartInstance = chart;
+  chart.setOption({
+    animation: false,
+    grid: { left: 10, right: 10, top: 12, bottom: 8, containLabel: false },
+    tooltip: {
+      trigger: "axis",
+      backgroundColor: "#10141a",
+      borderColor: "#29313b",
+      padding: [10, 12],
+      textStyle: { color: "#f4f6f8", fontFamily: "Inter, system-ui, sans-serif", fontWeight: 700 },
+      formatter(params) {
+        const point = Array.isArray(params) ? params[0] : params;
+        return `Match ${point.dataIndex + 1}<br/>Win rate: ${point.value}%`;
+      },
+    },
+    xAxis: {
+      type: "category",
+      boundaryGap: false,
+      data: series.map((_, index) => index + 1),
+      axisLine: { show: false },
+      axisTick: { show: false },
+      axisLabel: { show: false },
+    },
+    yAxis: {
+      type: "value",
+      min: 0,
+      max: 100,
+      axisLine: { show: false },
+      axisTick: { show: false },
+      axisLabel: { show: false },
+      splitLine: {
+        lineStyle: {
+          color: "rgba(143, 155, 170, 0.16)",
+          width: 1,
+        },
+      },
+    },
+    series: [
+      {
+        type: "line",
+        data: series,
+        smooth: 0.38,
+        symbol: "circle",
+        symbolSize: 7,
+        lineStyle: { color: lineColor, width: 4, cap: "round", join: "round" },
+        itemStyle: { color: "#080a0d", borderColor: lineColor, borderWidth: 2 },
+        emphasis: { scale: false },
+        areaStyle: {
+          color: new window.echarts.graphic.LinearGradient(0, 0, 0, 1, [
+            { offset: 0, color: areaTop },
+            { offset: 1, color: areaBottom },
+          ]),
+        },
+      },
+    ],
+  });
+
+  if (typeof ResizeObserver === "function") {
+    performanceChartResizeObserver = new ResizeObserver(() => chart.resize());
+    performanceChartResizeObserver.observe(node);
+  }
+}
+
+function dashboardMiniStat(label, value, note) {
+  const card = el("div", "dashboard-mini-card");
+  card.append(
+    el("div", "dashboard-mini-label", label),
+    el("div", "dashboard-mini-value", value),
+    el("div", "dashboard-mini-note", note)
+  );
+  return card;
 }
 
 function getMostCommonMistake() {
@@ -2083,7 +2636,7 @@ function mistakeFromRule(rule) {
 function sentenceCase(text) {
   const clean = text.trim();
   if (!clean) return "";
-  return clean.charAt(0).toUpperCase() + clean.slice(1);
+  return clean.charAt(0) + clean.slice(1);
 }
 
 function createBackup() {
@@ -2133,6 +2686,7 @@ function handleBattleReplayFile(file) {
   reader.addEventListener("load", () => {
     try {
       state.replayImport = parseShowdownReplayHtml(String(reader.result));
+      state.replayImportChoice = "";
       render();
     } catch {
       alert("Invalid replay HTML.");
@@ -2147,10 +2701,27 @@ function finalizeReplayImport(mySide) {
   state.battles.unshift(battle);
   writeJson(STORAGE.battles, state.battles);
   state.replayImport = null;
-  state.draft = createDraft();
+  state.replayImportChoice = "";
   state.archiveDetailId = "0";
   state.view = "archive";
   render();
+}
+
+function handleBattleMarkdownFile(file) {
+  const reader = new FileReader();
+  reader.addEventListener("load", () => {
+    try {
+      const battle = parseBattleMarkdown(String(reader.result));
+      state.battles.unshift(battle);
+      writeJson(STORAGE.battles, state.battles);
+      state.archiveDetailId = "0";
+      state.view = "archive";
+      render();
+    } catch {
+      alert("Invalid battle markdown.");
+    }
+  });
+  reader.readAsText(file);
 }
 
 function clearAllData() {
@@ -2180,6 +2751,7 @@ function parseShowdownReplayLog(rawLog) {
   const turns = [];
   let currentTurn = null;
   let currentTurnNumber = 0;
+  let pendingTurnNotes = [];
   let firstTimestamp = "";
   let winner = "";
   let forfeitedPlayer = "";
@@ -2210,6 +2782,7 @@ function parseShowdownReplayLog(rawLog) {
 
     if (kind === "switch") {
       applyReplaySwitch(sides, currentTurn, currentTurnNumber, parts[2] ?? "", parts[3] ?? "");
+      appendReplayTurnNote(parts, sides, currentTurn, pendingTurnNotes, currentTurnNumber);
       return;
     }
 
@@ -2218,6 +2791,7 @@ function parseShowdownReplayLog(rawLog) {
       currentTurn = {
         number: currentTurnNumber,
         note: "",
+        noteLines: pendingTurnNotes,
         feedback: "",
         p1Entries: consumePendingEntries(sides.p1),
         p2Entries: consumePendingEntries(sides.p2),
@@ -2226,16 +2800,19 @@ function parseShowdownReplayLog(rawLog) {
         p1Kos: [],
         p2Kos: [],
       };
+      pendingTurnNotes = [];
       turns.push(currentTurn);
       return;
     }
 
     if (kind === "faint") {
       applyReplayFaint(sides, currentTurn, parts[2] ?? "");
+      appendReplayTurnNote(parts, sides, currentTurn, pendingTurnNotes, currentTurnNumber);
       return;
     }
 
     if (kind === "upkeep") {
+      finalizeReplayTurnNote(currentTurn);
       currentTurn = null;
       return;
     }
@@ -2250,7 +2827,11 @@ function parseShowdownReplayLog(rawLog) {
       const match = text.match(/^(.+?) forfeited\./);
       if (match) forfeitedPlayer = match[1];
     }
+
+    appendReplayTurnNote(parts, sides, currentTurn, pendingTurnNotes, currentTurnNumber);
   });
+
+  finalizeReplayTurnNote(currentTurn);
 
   return {
     sides,
@@ -2278,7 +2859,8 @@ function buildBattleFromReplay(replayData, mySide) {
     note: "",
     turns: replayData.turns.map((turn) => ({
       number: turn.number,
-      note: "",
+      note: turn.note ?? "",
+      noteSource: "showdown",
       feedback: "",
       myEntries: turn[`${mySide}Entries`] ?? [],
       opponentEntries: turn[`${opponentSide}Entries`] ?? [],
@@ -2297,6 +2879,165 @@ function buildBattleFromReplay(replayData, mySide) {
     lead: replayData.sides[mySide].lead,
     back: replayData.sides[mySide].used.slice(2, 4),
   };
+}
+
+function appendReplayTurnNote(parts, sides, currentTurn, pendingTurnNotes, currentTurnNumber) {
+  if (!currentTurn && currentTurnNumber <= 0) return;
+  const line = replayLineToNote(parts, sides);
+  if (!line) return;
+  if (currentTurn) {
+    currentTurn.noteLines ??= [];
+    currentTurn.noteLines.push(line);
+    return;
+  }
+  pendingTurnNotes.push(line);
+}
+
+function finalizeReplayTurnNote(turn) {
+  if (!turn) return;
+  turn.note = (turn.noteLines ?? []).join("\n").trim();
+  delete turn.noteLines;
+}
+
+function replayLineToNote(parts, sides) {
+  const kind = parts[1];
+  if (!kind) return "";
+
+  if (kind === "switch") {
+    const actor = parseReplaySlot(parts[2] ?? "");
+    const side = actor ? sides[actor.side] : null;
+    const name = side ? replayNameForSide(side, parts[3] ?? "") : speciesFromDetails(parts[3] ?? "");
+    if (!name) return "";
+    return `${slotLabel(parts[2] ?? "")}: ${name} entered`;
+  }
+
+  if (kind === "move") {
+    const user = replayActorName(parts[2] ?? "", sides);
+    const move = parts[3] ?? "";
+    const target = replayActorName(parts[4] ?? "", sides);
+    if (!user || !move) return "";
+    return target ? `${user} used ${move} into ${target}` : `${user} used ${move}`;
+  }
+
+  if (kind === "faint") {
+    const target = replayActorName(parts[2] ?? "", sides);
+    return target ? `${target} fainted` : "";
+  }
+
+  if (kind === "-damage") {
+    const target = replayActorName(parts[2] ?? "", sides);
+    const hp = replayHpText(parts[3] ?? "");
+    return target ? `${target} took damage${hp ? ` (${hp})` : ""}` : "";
+  }
+
+  if (kind === "-heal") {
+    const target = replayActorName(parts[2] ?? "", sides);
+    const hp = replayHpText(parts[3] ?? "");
+    return target ? `${target} healed${hp ? ` (${hp})` : ""}` : "";
+  }
+
+  if (kind === "-status") {
+    const target = replayActorName(parts[2] ?? "", sides);
+    const status = statusLabel(parts[3] ?? "");
+    return target && status ? `${target} was ${status}` : "";
+  }
+
+  if (kind === "-miss") {
+    const user = replayActorName(parts[2] ?? "", sides);
+    const target = replayActorName(parts[3] ?? "", sides);
+    return user ? `${user} missed${target ? ` into ${target}` : ""}` : "";
+  }
+
+  if (kind === "-supereffective") {
+    const target = replayActorName(parts[2] ?? "", sides);
+    return target ? `It was super effective on ${target}` : "";
+  }
+
+  if (kind === "-resisted") {
+    const target = replayActorName(parts[2] ?? "", sides);
+    return target ? `${target} resisted the hit` : "";
+  }
+
+  if (kind === "-immune") {
+    const target = replayActorName(parts[2] ?? "", sides);
+    return target ? `${target} was immune` : "";
+  }
+
+  if (kind === "-singleturn") {
+    const target = replayActorName(parts[2] ?? "", sides);
+    const effect = parts[3] ?? "";
+    if (!target || !effect) return "";
+    return `${target}: ${effect.replace(/^move:\s*/i, "")}`;
+  }
+
+  if (kind === "-weather") {
+    const weather = weatherLabel(parts[2] ?? "");
+    return weather ? `Weather: ${weather}` : "";
+  }
+
+  if (kind === "-mega") {
+    const target = replayActorName(parts[2] ?? "", sides);
+    return target ? `${target} Mega Evolved` : "";
+  }
+
+  if (kind === "-activate") {
+    const target = replayActorName(parts[2] ?? "", sides);
+    const effect = parts[3] ?? "";
+    if (!target || !effect) return "";
+    return `${target}: ${effect.replace(/^move:\s*/i, "")}`;
+  }
+
+  if (kind === "-enditem") {
+    const target = replayActorName(parts[2] ?? "", sides);
+    const item = parts[3] ?? "";
+    return target && item ? `${target} used ${item}` : "";
+  }
+
+  return "";
+}
+
+function replayActorName(token, sides) {
+  const actor = parseReplaySlot(token);
+  if (actor && sides[actor.side]) {
+    return sides[actor.side].active[actor.slot] || token.split(":").slice(1).join(":").trim();
+  }
+  return token.split(":").slice(1).join(":").trim() || token.trim();
+}
+
+function replayHpText(value) {
+  const text = String(value ?? "").trim();
+  if (!text) return "";
+  if (text.includes("fnt")) return "KO";
+  return text.split(" ").slice(0, 1)[0];
+}
+
+function statusLabel(code) {
+  const labels = {
+    brn: "burned",
+    par: "paralyzed",
+    slp: "put to sleep",
+    frz: "frozen",
+    psn: "poisoned",
+    tox: "badly poisoned",
+  };
+  return labels[String(code ?? "").trim()] ?? String(code ?? "").trim();
+}
+
+function weatherLabel(code) {
+  const labels = {
+    Sandstorm: "Sandstorm",
+    SunnyDay: "Sun",
+    RainDance: "Rain",
+    Snow: "Snow",
+    Hail: "Hail",
+  };
+  return labels[String(code ?? "").trim()] ?? String(code ?? "").trim();
+}
+
+function slotLabel(token) {
+  const actor = parseReplaySlot(token);
+  if (!actor) return "Field";
+  return actor.slot === "a" ? `${actor.side} left` : `${actor.side} right`;
 }
 
 function applyReplaySwitch(sides, currentTurn, currentTurnNumber, slotToken, details) {
@@ -2444,7 +3185,7 @@ function toCoachCsv() {
   ];
 
   const rows = state.battles.flatMap((battle, index) => {
-    const team = battle.teamNames?.length ? battle.teamNames : battle.used ?? [];
+    const team = battleFullTeamNames(battle);
     const base = [
       index + 1,
       battle.savedAt ?? battle.createdAt ?? "",
@@ -2508,6 +3249,251 @@ function toCoachCsv() {
 
 function csvCell(value) {
   return `"${String(value ?? "").replaceAll('"', '""')}"`;
+}
+
+function battleToMarkdown(battle) {
+  const lines = [];
+  const savedDate = formatDate(battle.savedAt ?? battle.createdAt);
+  const result = battle.result || "Pending";
+  const myLead = battle.lead ?? battle.used.slice(0, 2);
+  const myBack = battle.back ?? battle.used.slice(2, 4);
+  const myTeam = battleFullTeamNames(battle);
+  const oppBack = observedOpponentBack(battle);
+
+  lines.push(`# Battle log`);
+  lines.push("");
+  lines.push(`- Date: ${savedDate}`);
+  lines.push(`- Result: ${result}`);
+  if (battle.errorTurn) lines.push(`- Key turn: Turn ${battle.errorTurn}`);
+  lines.push("");
+
+  lines.push(`## Team preview`);
+  lines.push("");
+  lines.push(`### My team`);
+  lines.push(...markdownRosterSection("Team", myTeam));
+  lines.push(...markdownRosterSection("Lead", myLead));
+  lines.push(...markdownRosterSection("Back", myBack));
+  lines.push("");
+  lines.push(`### Opponent team`);
+  lines.push(...markdownRosterSection("Team", (battle.opponentTeam ?? []).filter(Boolean)));
+  lines.push(...markdownRosterSection("Lead", battle.opponentLead ?? []));
+  if (oppBack.length) lines.push(...markdownRosterSection("Back", oppBack));
+  lines.push("");
+
+  if (String(battle.note ?? "").trim()) {
+    lines.push(`## Game Plan`);
+    lines.push("");
+    lines.push(String(battle.note).trim());
+    lines.push("");
+  }
+
+  lines.push(`## Turns`);
+  lines.push("");
+  if (battle.turns?.length) {
+    battle.turns.forEach((turn) => {
+      const board = boardBeforeTurn(battle, turn.number);
+      const boardStart = previewBoard(board, turn, { includeSwitches: false, includeKos: false });
+      const boardEnd = previewBoard(board, turn);
+      lines.push(`### Turn ${turn.number}`);
+      lines.push("");
+      if (battle.errorTurn === String(turn.number)) lines.push(`- Key turn`);
+      lines.push(`- Start turn: ${battleBoardLine(boardStart)}`);
+      markdownEventLines(turn).forEach((item) => lines.push(`- ${item}`));
+      lines.push(`- End turn: ${battleBoardLine(boardEnd)}`);
+      if (String(turn.note ?? "").trim()) {
+        lines.push(`- ${turn.noteSource === "showdown" ? "Showdown log" : "Notes"}:`);
+        lines.push(...indentMultiline(turn.note));
+      }
+      if (String(turn.feedback ?? "").trim()) {
+        lines.push(`- Feedback:`);
+        lines.push(...indentMultiline(turn.feedback));
+      }
+      lines.push("");
+    });
+  } else {
+    lines.push(`No turn notes.`);
+    lines.push("");
+  }
+
+  if (String(battle.takeaway ?? battle.finalRule ?? battle.betterLine ?? "").trim()) {
+    lines.push(`## Takeaways`);
+    lines.push("");
+    lines.push(String(battle.takeaway ?? battle.finalRule ?? battle.betterLine ?? "").trim());
+    lines.push("");
+  }
+
+  return lines.join("\n").trimEnd() + "\n";
+}
+
+function markdownRosterSection(label, names) {
+  const filled = (names ?? []).filter(Boolean);
+  if (!filled.length) return [];
+  return [`- ${label}: ${filled.join(", ")}`];
+}
+
+function markdownEventLines(turn) {
+  return previewEventItems(turn).map((event) => {
+    if (event.kind === "switch") {
+      return `${event.label}: ${event.out || "?"} -> ${event.in || "?"}`;
+    }
+    return `${event.label}: ${(event.names ?? []).join(", ")}`;
+  });
+}
+
+function indentMultiline(text) {
+  return String(text ?? "")
+    .split("\n")
+    .map((line) => `  ${line}`);
+}
+
+function dateStamp(value) {
+  const date = value ? new Date(value) : new Date();
+  if (Number.isNaN(date.getTime())) return "battle";
+  const yyyy = date.getFullYear();
+  const mm = String(date.getMonth() + 1).padStart(2, "0");
+  const dd = String(date.getDate()).padStart(2, "0");
+  return `${yyyy}-${mm}-${dd}`;
+}
+
+function parseBattleMarkdown(markdown) {
+  const text = String(markdown ?? "").replace(/\r/g, "").trim();
+  if (!text.includes("# Battle log")) throw new Error("Invalid markdown");
+
+  const sections = splitMarkdownSections(text);
+  const meta = parseMarkdownMeta(text);
+  const teamPreview = sections["Team preview"] ?? "";
+  const myTeamSection = sectionBody(teamPreview, "My team");
+  const opponentTeamSection = sectionBody(teamPreview, "Opponent team");
+  const turnsSection = sections["Turns"] ?? "";
+  const takeaways = (sections["Takeaways"] ?? "").trim();
+  const gamePlan = (sections["Game Plan"] ?? "").trim();
+
+  const parsedMyTeamNames = parseMarkdownListLine(myTeamSection, "Team");
+  const myLead = parseMarkdownListLine(myTeamSection, "Lead");
+  const myBack = parseMarkdownListLine(myTeamSection, "Back");
+  const myTeamNames = parsedMyTeamNames.length ? parsedMyTeamNames : [...new Set([...myLead, ...myBack])];
+  const opponentTeam = parseMarkdownListLine(opponentTeamSection, "Team");
+  const opponentLead = parseMarkdownListLine(opponentTeamSection, "Lead");
+
+  const parsedTurns = parseMarkdownTurns(turnsSection);
+  const matchedTeam = matchSavedTeam(myTeamNames);
+
+  return {
+    id: createId(),
+    createdAt: new Date().toISOString(),
+    savedAt: new Date().toISOString(),
+    archetypes: [],
+    result: meta.result,
+    opponentTeam,
+    opponentLead,
+    used: [...myLead, ...myBack].filter(Boolean),
+    note: gamePlan,
+    turns: parsedTurns,
+    errorTurn: meta.keyTurn,
+    takeaway: takeaways,
+    teamId: matchedTeam?.id ?? "",
+    teamName: matchedTeam?.name ?? (myTeamNames.length >= 2 ? teamLabel(myTeamNames) : ""),
+    teamNames: matchedTeam?.names ?? myTeamNames,
+    lead: myLead,
+    back: myBack,
+  };
+}
+
+function splitMarkdownSections(text) {
+  const sections = {};
+  const matches = [...text.matchAll(/^## (.+)$/gm)];
+  matches.forEach((match, index) => {
+    const title = match[1].trim();
+    const start = match.index + match[0].length;
+    const end = index + 1 < matches.length ? matches[index + 1].index : text.length;
+    sections[title] = text.slice(start, end).trim();
+  });
+  return sections;
+}
+
+function parseMarkdownMeta(text) {
+  return {
+    result: markdownMetaValue(text, "Result") || "",
+    keyTurn: (markdownMetaValue(text, "Key turn").match(/Turn\s+(\d+)/i)?.[1] ?? ""),
+  };
+}
+
+function markdownMetaValue(text, label) {
+  const match = text.match(new RegExp(`^- ${escapeRegExp(label)}:\\s*(.+)$`, "m"));
+  return match?.[1]?.trim() ?? "";
+}
+
+function sectionBody(sectionText, heading) {
+  const match = sectionText.match(new RegExp(`### ${escapeRegExp(heading)}\\n([\\s\\S]*?)(?=\\n### |$)`));
+  return match?.[1]?.trim() ?? "";
+}
+
+function parseMarkdownListLine(sectionText, label) {
+  const match = sectionText.match(new RegExp(`^- ${escapeRegExp(label)}:\\s*(.+)$`, "m"));
+  if (!match?.[1]) return [];
+  return match[1].split(",").map((item) => item.trim()).filter(Boolean);
+}
+
+function parseMarkdownTurns(sectionText) {
+  const matches = [...sectionText.matchAll(/^### Turn (\d+)$/gm)];
+  return matches.map((match, index) => {
+    const number = Number(match[1]);
+    const start = match.index + match[0].length;
+    const end = index + 1 < matches.length ? matches[index + 1].index : sectionText.length;
+    const body = sectionText.slice(start, end).trim();
+    return parseMarkdownTurn(number, body);
+  });
+}
+
+function parseMarkdownTurn(number, body) {
+  const noteBlock = markdownIndentedBlock(body, "Notes") || markdownIndentedBlock(body, "Showdown log");
+  const noteSource = markdownIndentedBlock(body, "Showdown log") ? "showdown" : "manual";
+  const feedbackBlock = markdownIndentedBlock(body, "Feedback");
+  return {
+    number,
+    note: noteBlock,
+    noteSource,
+    feedback: feedbackBlock,
+    myEntries: markdownCommaLine(body, "My in"),
+    opponentEntries: markdownCommaLine(body, "Opponent in"),
+    mySwitches: markdownSwitchPairs(body, "My switch").map((pair) => pair.in),
+    opponentSwitches: markdownSwitchPairs(body, "Opponent switch").map((pair) => pair.in),
+    mySwitchPairs: markdownSwitchPairs(body, "My switch"),
+    opponentSwitchPairs: markdownSwitchPairs(body, "Opponent switch"),
+    myKos: markdownCommaLine(body, "My KO"),
+    opponentKos: markdownCommaLine(body, "Opponent KO"),
+  };
+}
+
+function markdownCommaLine(body, label) {
+  const match = body.match(new RegExp(`^- ${escapeRegExp(label)}:\\s*(.+)$`, "m"));
+  if (!match?.[1]) return [];
+  return match[1].split(",").map((item) => item.trim()).filter(Boolean);
+}
+
+function markdownSwitchPairs(body, label) {
+  const match = body.match(new RegExp(`^- ${escapeRegExp(label)}:\\s*(.+)$`, "m"));
+  if (!match?.[1]) return [];
+  return match[1]
+    .split(",")
+    .map((item) => item.trim())
+    .filter(Boolean)
+    .map((item) => {
+      const [out, incoming] = item.split("->").map((part) => part.trim());
+      return out && incoming ? { out, in: incoming } : null;
+    })
+    .filter(Boolean);
+}
+
+function markdownIndentedBlock(body, label) {
+  const match = body.match(new RegExp(`^- ${escapeRegExp(label)}:\\n((?:  .*\\n?)*)`, "m"));
+  return match?.[1]
+    ? match[1].replace(/^  /gm, "").trim()
+    : "";
+}
+
+function escapeRegExp(value) {
+  return String(value).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 function download(filename, content, type = "text/plain;charset=utf-8") {
