@@ -1941,7 +1941,7 @@ input {
   display: flex;
   justify-content: center;
   gap: 6px;
-  padding: 8px 14px calc(18px + env(safe-area-inset-bottom));
+  padding: 8px 14px calc(22px + env(safe-area-inset-bottom));
   background: rgba(8, 10, 13, 0.96);
   border-top: 1px solid rgba(41, 49, 59, 0.72);
   backdrop-filter: blur(12px);
