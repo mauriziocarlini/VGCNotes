@@ -2697,7 +2697,8 @@ function handleBattleReplayFile(file) {
 
 function finalizeReplayImport(mySide) {
   if (!state.replayImport) return;
-  const battle = buildBattleFromReplay(state.replayImport, mySide);
+  const importedTeam = ensureSavedTeamFromReplay(state.replayImport.sides[mySide].team);
+  const battle = buildBattleFromReplay(state.replayImport, mySide, importedTeam);
   state.battles.unshift(battle);
   writeJson(STORAGE.battles, state.battles);
   state.replayImport = null;
@@ -2842,10 +2843,10 @@ function parseShowdownReplayLog(rawLog) {
   };
 }
 
-function buildBattleFromReplay(replayData, mySide) {
+function buildBattleFromReplay(replayData, mySide, ensuredTeam = null) {
   const opponentSide = mySide === "p1" ? "p2" : "p1";
   const myTeam = replayData.sides[mySide].team;
-  const matchedTeam = matchSavedTeam(myTeam);
+  const matchedTeam = ensuredTeam ?? matchSavedTeam(myTeam);
 
   return {
     id: createId(),
@@ -2879,6 +2880,41 @@ function buildBattleFromReplay(replayData, mySide) {
     lead: replayData.sides[mySide].lead,
     back: replayData.sides[mySide].used.slice(2, 4),
   };
+}
+
+function ensureSavedTeamFromReplay(teamNames) {
+  const normalizedTeam = (teamNames ?? []).filter(Boolean);
+  if (normalizedTeam.length !== 6) return null;
+  const existing = findEquivalentSavedTeam(normalizedTeam);
+  if (existing) return existing;
+
+  const team = {
+    id: createId(),
+    name: teamLabel(normalizedTeam),
+    names: normalizedTeam,
+    createdAt: new Date().toISOString(),
+  };
+  state.teams.unshift(team);
+  if (state.teams.length === 1 || !state.activeTeamId) {
+    state.activeTeamId = team.id;
+    writeJson(STORAGE.activeTeamId, state.activeTeamId);
+    writeJson(STORAGE.team, team.names);
+  }
+  writeJson(STORAGE.teams, state.teams);
+  return team;
+}
+
+function findEquivalentSavedTeam(team) {
+  const target = normalizedTeamSignature(team);
+  return state.teams.find((saved) => normalizedTeamSignature(saved.names) === target) ?? null;
+}
+
+function normalizedTeamSignature(team) {
+  return (team ?? [])
+    .map(normalizeReplayName)
+    .filter(Boolean)
+    .sort()
+    .join("|");
 }
 
 function appendReplayTurnNote(parts, sides, currentTurn, pendingTurnNotes, currentTurnNumber) {
