@@ -1839,6 +1839,10 @@ function renderArchive() {
 
   screen.append(renderArchiveImportGroup());
 
+  if (state.replayImport) {
+    return;
+  }
+
   if (!state.battles.length) {
     screen.append(el("div", "empty", "No saved games yet."));
     return;
@@ -1878,8 +1882,6 @@ function renderArchive() {
 }
 
 function renderArchiveImportGroup() {
-  const group = el("div", "settings-grid archive-import-grid");
-
   const replayInput = el("input", "file-input");
   replayInput.type = "file";
   replayInput.accept = ".html,text/html,text/plain";
@@ -1899,6 +1901,7 @@ function renderArchiveImportGroup() {
   });
 
   if (!state.replayImport) {
+    const group = el("div", "settings-grid archive-import-grid");
     const replayButton = el("button", "secondary import-button", "Import Showdown Replay");
     replayButton.type = "button";
     replayButton.addEventListener("click", () => replayInput.click());
@@ -1911,7 +1914,8 @@ function renderArchiveImportGroup() {
     return group;
   }
 
-  group.append(replayInput, markdownInput);
+  const flow = el("div", "group replay-import-flow");
+  flow.append(replayInput, markdownInput);
   const prompt = el("div", "group replay-import-prompt");
   const promptHeader = el("div", "archive-card-header");
   promptHeader.append(
@@ -1928,8 +1932,8 @@ function renderArchiveImportGroup() {
     finalizeReplayImport(state.replayImportChoice);
   });
   prompt.append(promptHeader, options, confirm);
-  group.append(prompt);
-  return group;
+  flow.append(prompt);
+  return flow;
 }
 
 function renderArchiveDetail() {
