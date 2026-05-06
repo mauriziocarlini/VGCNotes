@@ -1882,7 +1882,7 @@ function renderArchiveImportGroup() {
 
   const replayInput = el("input", "file-input");
   replayInput.type = "file";
-  replayInput.accept = "text/html,.html";
+  replayInput.accept = ".html,text/html,text/plain";
   replayInput.addEventListener("change", () => {
     const file = replayInput.files?.[0];
     if (file) handleBattleReplayFile(file);
